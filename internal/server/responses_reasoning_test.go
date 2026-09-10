@@ -2,6 +2,7 @@ package server
 
 import (
 	"io"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -50,6 +51,7 @@ func TestResponsesRelayReasoningNonStream(t *testing.T) {
 	upstream := strings.Join([]string{
 		`data: {"id":"x","choices":[{"index":0,"delta":{"reasoning_content":"thinking"}}]}`, "",
 		`data: {"id":"x","choices":[{"index":0,"delta":{"content":"answer"}}]}`, "",
+		`data: {"id":"x","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`, "",
 		"data: [DONE]", "",
 	}, "\n")
 	rec := httptest.NewRecorder()
@@ -57,5 +59,27 @@ func TestResponsesRelayReasoningNonStream(t *testing.T) {
 	body := rec.Body.String()
 	if !strings.Contains(body, `"type":"reasoning"`) || !strings.Contains(body, `"thinking"`) {
 		t.Errorf("non-stream reasoning item missing: %s", body)
+	}
+}
+
+// 回归：上游流截断（无 finish/[DONE]）时流式发 response.failed、非流式报 502，
+// 不得伪装成 completed（表现为 Codex"思考链断链"）。
+func TestResponsesRelayTruncated(t *testing.T) {
+	upstream := strings.Join([]string{
+		`data: {"id":"x","choices":[{"index":0,"delta":{"reasoning_content":"partial thinking"}}]}`, "",
+	}, "\n")
+	rec := httptest.NewRecorder()
+	_, _ = (&Handler{}).responsesRelay(rec, io.NopCloser(strings.NewReader(upstream)), "gpt-5", true, time.Now())
+	body := rec.Body.String()
+	if !strings.Contains(body, "event: response.failed") {
+		t.Errorf("truncated stream must emit response.failed:\n%s", body)
+	}
+	if strings.Contains(body, "event: response.completed") {
+		t.Errorf("truncated stream must not emit response.completed:\n%s", body)
+	}
+	rec2 := httptest.NewRecorder()
+	_, _ = (&Handler{}).responsesRelay(rec2, io.NopCloser(strings.NewReader(upstream)), "gpt-5", false, time.Now())
+	if rec2.Code != http.StatusBadGateway {
+		t.Errorf("non-stream truncated: status=%d body=%s", rec2.Code, rec2.Body.String())
 	}
 }

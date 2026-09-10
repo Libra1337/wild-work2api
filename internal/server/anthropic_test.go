@@ -119,6 +119,56 @@ func TestAnthropicRelayStream(t *testing.T) {
 	}
 }
 
+// 回归：上游流中途截断（无 finish_reason/[DONE]）必须发 error 事件，
+// 不得伪装成完整回复（表现为客户端"思考链断链"）。
+func TestAnthropicRelayTruncated(t *testing.T) {
+	upstream := strings.Join([]string{
+		`data: {"id":"x","choices":[{"index":0,"delta":{"reasoning_content":"partial thinking"}}]}`, "",
+		// 没有 finish_reason、没有 [DONE]，流就此终止
+	}, "\n")
+	rec := httptest.NewRecorder()
+	anthropicRelay(rec, io.NopCloser(strings.NewReader(upstream)), "glm-5.3")
+	body := rec.Body.String()
+	if !strings.Contains(body, "event: error") {
+		t.Errorf("truncated stream must emit error event:\n%s", body)
+	}
+	if !strings.Contains(body, "event: message_stop") {
+		t.Errorf("message_stop still required for protocol closure:\n%s", body)
+	}
+	// 正常流不应出现 error 事件
+	rec2 := httptest.NewRecorder()
+	anthropicRelay(rec2, io.NopCloser(strings.NewReader(
+		"data: {\"id\":\"x\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")), "glm-5.3")
+	if strings.Contains(rec2.Body.String(), "event: error") {
+		t.Errorf("normal stream must not emit error event:\n%s", rec2.Body.String())
+	}
+}
+
+// 回归：思考与工具调用交错导致工具块重开时，id/name 保留原值（不合成 call_N）。
+func TestAnthropicRelayToolBlockReopenKeepsIdentity(t *testing.T) {
+	upstream := strings.Join([]string{
+		`data: {"id":"x","choices":[{"index":0,"delta":{"tool_calls":[{"id":"call_real","type":"function","function":{"name":"get_weather","arguments":"{\"ci"},"index":0}]}}]}`, "",
+		`data: {"id":"x","choices":[{"index":0,"delta":{"reasoning_content":"wait, check again"}}]}`, "",
+		`data: {"id":"x","choices":[{"index":0,"delta":{"tool_calls":[{"function":{"arguments":"ty\":\"Paris\"}"},"index":0}]}}]}`, "",
+		`data: {"id":"x","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`, "",
+		"data: [DONE]", "",
+	}, "\n")
+	rec := httptest.NewRecorder()
+	anthropicRelay(rec, io.NopCloser(strings.NewReader(upstream)), "glm-5.3")
+	body := rec.Body.String()
+	// 第二次 tool 块 start 仍带原 id 与 name
+	if !strings.Contains(body, `"id":"call_real","input":{},"name":"get_weather","type":"tool_use"`) {
+		t.Errorf("reopened tool block lost identity:\n%s", body)
+	}
+	// 拼接后的 partial_json 还原完整参数
+	if !strings.Contains(body, `"partial_json":"ty\":\"Paris\"}"`) {
+		t.Errorf("args fragment missing:\n%s", body)
+	}
+	if !strings.Contains(body, `"stop_reason":"tool_use"`) {
+		t.Errorf("stop_reason wrong:\n%s", body)
+	}
+}
+
 // 非流式：Aggregate → Anthropic message（thinking + text + tool_use + stop_reason）。
 func TestAnthropicFromAggregate(t *testing.T) {
 	resp := map[string]any{

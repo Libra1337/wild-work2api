@@ -313,21 +313,28 @@ func (h *Handler) responsesRelay(w http.ResponseWriter, rc io.ReadCloser, model 
 
 	scanner := bufio.NewScanner(rc)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
+	sawFinish := false
+	sawDone := false
 	for scanner.Scan() {
 		line := scanner.Text()
 		if !strings.HasPrefix(line, "data:") {
 			continue
 		}
 		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-		if data == "" || data == "[DONE]" {
+		if data == "" {
+			continue
+		}
+		if data == "[DONE]" {
+			sawDone = true
 			continue
 		}
 		var chunk struct {
 			Choices []struct {
 				Delta struct {
-					Content   string `json:"content"`
-					Reasoning string `json:"reasoning_content"`
-					ToolCalls []struct {
+					Content    string `json:"content"`
+					Reasoning  string `json:"reasoning_content"`
+					Reasoning2 string `json:"reasoning"` // OpenRouter 派字段兼容
+					ToolCalls  []struct {
 						Index    *int   `json:"index"`
 						ID       string `json:"id"`
 						Function struct {
@@ -336,6 +343,7 @@ func (h *Handler) responsesRelay(w http.ResponseWriter, rc io.ReadCloser, model 
 						} `json:"function"`
 					} `json:"tool_calls"`
 				} `json:"delta"`
+				FinishReason string `json:"finish_reason"`
 			} `json:"choices"`
 			Usage map[string]any `json:"usage"`
 		}
@@ -349,6 +357,12 @@ func (h *Handler) responsesRelay(w http.ResponseWriter, rc io.ReadCloser, model 
 			continue
 		}
 		delta := chunk.Choices[0].Delta
+		if chunk.Choices[0].FinishReason != "" {
+			sawFinish = true
+		}
+		if delta.Reasoning == "" {
+			delta.Reasoning = delta.Reasoning2
+		}
 
 		// 推理内容 → reasoning_summary 事件（Codex 据此显示思考过程）
 		if delta.Reasoning != "" {
@@ -496,8 +510,16 @@ func (h *Handler) responsesRelay(w http.ResponseWriter, rc io.ReadCloser, model 
 		}
 	}
 
+	// 截断检测：未见 [DONE] 且（传输错误或未见 finish_reason）= 上游中途死亡。
+	// 不能伪装成 completed —— Codex 会把残缺思考/文本当完整回复（表现为"思考链断链"）。
+	truncated := !sawDone && (scanner.Err() != nil || !sawFinish)
+
 	if !stream {
-		// 非流式：聚合为单个 response JSON
+		// 非流式：聚合为单个 response JSON；截断时报错让客户端重试
+		if truncated {
+			writeResponsesError(w, http.StatusBadGateway, "upstream stream ended before completion")
+			return usage, 0
+		}
 		writeJSONRaw(w, http.StatusOK, respEnvelope("completed", output))
 		return usage, 0
 	}
@@ -542,6 +564,15 @@ func (h *Handler) responsesRelay(w http.ResponseWriter, rc io.ReadCloser, model 
 				"item":         output[i],
 			})
 		}
+	}
+	if truncated {
+		// 流式截断：先收尾已开的项目，再以 failed 终止（客户端可感知并重试）
+		env := respEnvelope("failed", output)
+		env["error"] = map[string]any{
+			"code": "upstream_stream_ended", "message": "upstream stream ended before completion",
+		}
+		emit("response.failed", map[string]any{"response": env})
+		return usage, ttfb
 	}
 	emit("response.completed", map[string]any{
 		"response": respEnvelope("completed", output),

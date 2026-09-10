@@ -360,6 +360,9 @@ func anthropicRelay(w http.ResponseWriter, rc io.ReadCloser, model string) map[s
 		curToolIdx = -1 // 当前 tool 块对应的上游 tool_calls index
 		usage      map[string]any
 		stopReason = "end_turn"
+		sawFinish  bool                  // 见到 finish_reason
+		sawDone    bool                  // 见到 [DONE]
+		toolMeta   = map[int][2]string{} // 上游 tool index -> {id, name}（块重开时保留标识）
 	)
 	emit := func(event string, payload map[string]any) {
 		payload["type"] = event
@@ -399,15 +402,20 @@ func anthropicRelay(w http.ResponseWriter, rc io.ReadCloser, model string) map[s
 	for sc.Scan() {
 		line := sc.Text()
 		payload, ok := trimDataPrefix(strings.TrimSpace(line))
-		if !ok || payload == "" || payload == "[DONE]" {
+		if !ok || payload == "" {
+			continue
+		}
+		if payload == "[DONE]" {
+			sawDone = true
 			continue
 		}
 		var chunk struct {
 			Choices []struct {
 				Delta struct {
-					Content   string `json:"content"`
-					Reasoning string `json:"reasoning_content"`
-					ToolCalls []struct {
+					Content    string `json:"content"`
+					Reasoning  string `json:"reasoning_content"`
+					Reasoning2 string `json:"reasoning"` // OpenRouter 派字段兼容
+					ToolCalls  []struct {
 						Index    *int   `json:"index"`
 						ID       string `json:"id"`
 						Function struct {
@@ -431,8 +439,12 @@ func anthropicRelay(w http.ResponseWriter, rc io.ReadCloser, model string) map[s
 		}
 		ch0 := chunk.Choices[0]
 		d := ch0.Delta
+		reasoning := d.Reasoning
+		if reasoning == "" {
+			reasoning = d.Reasoning2
+		}
 
-		if d.Reasoning != "" {
+		if reasoning != "" {
 			if curKind != "thinking" {
 				openBlock("thinking", map[string]any{
 					"type": "thinking", "thinking": "", "signature": "",
@@ -440,7 +452,7 @@ func anthropicRelay(w http.ResponseWriter, rc io.ReadCloser, model string) map[s
 			}
 			emit("content_block_delta", map[string]any{
 				"index": curIdx,
-				"delta": map[string]any{"type": "thinking_delta", "thinking": d.Reasoning},
+				"delta": map[string]any{"type": "thinking_delta", "thinking": reasoning},
 			})
 		}
 		if d.Content != "" {
@@ -457,13 +469,22 @@ func anthropicRelay(w http.ResponseWriter, rc io.ReadCloser, model string) map[s
 			if tc.Index != nil {
 				idx = *tc.Index
 			}
+			// 记住每个调用的 id/name：续片通常不带，块因思考交错重开时需要原标识
+			meta := toolMeta[idx]
+			if tc.ID != "" {
+				meta = [2]string{tc.ID, meta[1]}
+			}
+			if tc.Function.Name != "" {
+				meta = [2]string{meta[0], tc.Function.Name}
+			}
+			toolMeta[idx] = meta
 			if curKind != "tool" || curToolIdx != idx {
-				id := tc.ID
+				id := meta[0]
 				if id == "" {
 					id = fmt.Sprintf("call_%d", idx)
 				}
 				openBlock("tool", map[string]any{
-					"type": "tool_use", "id": id, "name": tc.Function.Name, "input": map[string]any{},
+					"type": "tool_use", "id": id, "name": meta[1], "input": map[string]any{},
 				}, idx)
 			}
 			if tc.Function.Arguments != "" {
@@ -476,15 +497,31 @@ func anthropicRelay(w http.ResponseWriter, rc io.ReadCloser, model string) map[s
 		switch ch0.FinishReason {
 		case "tool_calls":
 			stopReason = "tool_use"
+			sawFinish = true
 		case "length":
 			stopReason = "max_tokens"
+			sawFinish = true
+		case "stop":
+			sawFinish = true
 		}
 	}
-	// 收尾：关当前块 → message_delta(stop_reason) → message_stop
+	// 截断检测：未见 [DONE] 且（传输错误或未见 finish_reason）= 上游中途死亡。
+	// 必须显式发 error 事件，否则客户端把残缺思考/文本当成完整回复（表现为"思考链断链"）。
+	truncated := !sawDone && (sc.Err() != nil || !sawFinish)
+	// 收尾：关当前块 →（截断时补 error）→ message_delta(stop_reason) → message_stop
 	messageStart()
 	if curKind != "" {
 		emit("content_block_stop", map[string]any{"index": curIdx})
 		curKind = ""
+	}
+	if truncated {
+		reason := "upstream stream ended before completion"
+		if sc.Err() != nil {
+			reason = "upstream stream aborted: " + sc.Err().Error()
+		}
+		emit("error", map[string]any{
+			"error": map[string]any{"type": "upstream_error", "message": reason},
+		})
 	}
 	u := anthropicUsage(usage)
 	emit("message_delta", map[string]any{
