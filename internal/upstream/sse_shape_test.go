@@ -208,11 +208,19 @@ func TestStreamDoneWithoutSpace(t *testing.T) {
 	}
 }
 
-// 回归：流被掐（无 finish_reason/[DONE]）但已有 tool_calls 时，
-// 非流式聚合的 finish_reason 报 tool_calls 而非谎报 stop。
+// 回归：截断流（无 [DONE]、无 finish_reason）必须报错而非伪装成完整响应——
+// 与流式路径截断判定同口径；调用方（chat/anthropic 非流式）据此回 502。
 func TestAggregateTruncatedToolCall(t *testing.T) {
 	raw := "data: {\"id\":\"t1\",\"model\":\"m\",\"created\":1,\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"f\",\"arguments\":\"{\"},\"index\":0}]}}]}\n\n"
-	resp, err := Aggregate(strings.NewReader(raw))
+	_, err := Aggregate(strings.NewReader(raw))
+	if err == nil || !strings.Contains(err.Error(), "truncated") {
+		t.Fatalf("err=%v, want truncated error", err)
+	}
+	// 完整形态（finish_reason + [DONE]）正常聚合，finish=tool_calls
+	full := raw +
+		"data: {\"id\":\"t1\",\"model\":\"m\",\"created\":1,\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n" +
+		"data: [DONE]\n\n"
+	resp, err := Aggregate(strings.NewReader(full))
 	if err != nil {
 		t.Fatal(err)
 	}

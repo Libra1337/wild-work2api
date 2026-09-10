@@ -6,6 +6,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 )
 
 // 回归：卡流探测消费的字节必须完整回放。
@@ -58,4 +59,20 @@ func TestWaitFirstContentShortPayload(t *testing.T) {
 	if got.String() != upstream {
 		t.Fatalf("replay mismatch:\n got: %q\nwant: %q", got.String(), upstream)
 	}
+}
+
+// 空闲看门狗：长时间无 Read 进展时底层 body 被强制关闭（读者收到错误）。
+func TestIdleWatchdog(t *testing.T) {
+	pr, pw := io.Pipe() // 永不主动 EOF 的"沉默上游"
+	wd := newIdleWatchdog(pr, 50*time.Millisecond)
+	buf := make([]byte, 16)
+	go func() { time.Sleep(10 * time.Millisecond); pw.Write([]byte("x")) }()
+	if n, err := wd.Read(buf); err != nil || n != 1 {
+		t.Fatalf("first read: n=%d err=%v", n, err)
+	}
+	// 之后保持沉默：50ms 看门狗应关掉底层 pipe，Read 返回错误
+	if _, err := wd.Read(buf); err == nil {
+		t.Fatal("expected error after idle timeout")
+	}
+	wd.Close()
 }

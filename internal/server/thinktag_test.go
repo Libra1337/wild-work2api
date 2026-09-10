@@ -106,3 +106,37 @@ func TestThinkTagWriterNoReasoning(t *testing.T) {
 		t.Errorf("content=%v", d["content"])
 	}
 }
+
+// 同帧携带推理+正文：正文不得被吞，标签先开后闭。
+func TestThinkTagWriterReasoningAndContentSameFrame(t *testing.T) {
+	rec := httptest.NewRecorder()
+	ttw := newThinkTagWriter(rec)
+	_, _ = ttw.Write([]byte(`data: {"id":"x","choices":[{"index":0,"delta":{"reasoning_content":"think","content":"answer"}}]}` + "\n\n"))
+	ttw.Finish()
+	body := rec.Body.String()
+	if !strings.Contains(body, `"content":"<think>think</think>\nanswer"`) {
+		t.Errorf("same-frame merge wrong: %s", body)
+	}
+}
+
+// 终帧（finish_reason）先于闭合标签到达：闭合帧必须发在 finish 帧之前。
+func TestThinkTagWriterCloseBeforeFinishFrame(t *testing.T) {
+	rec := httptest.NewRecorder()
+	ttw := newThinkTagWriter(rec)
+	_, _ = ttw.Write([]byte(`data: {"id":"x","choices":[{"index":0,"delta":{"reasoning_content":"only think"}}]}` + "\n\n"))
+	_, _ = ttw.Write([]byte(`data: {"id":"x","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}` + "\n\n"))
+	ttw.Finish()
+	body := rec.Body.String()
+	closeIdx := strings.Index(body, `"</think>\n"`)
+	finishIdx := strings.Index(body, `"finish_reason":"stop"`)
+	if closeIdx < 0 || finishIdx < 0 {
+		t.Fatalf("frames missing: %s", body)
+	}
+	if closeIdx > finishIdx {
+		t.Errorf("close tag must precede finish frame: %s", body)
+	}
+	// 闭合帧 index 缺省为 0，不得出现 null
+	if strings.Contains(body, `"index":null`) {
+		t.Errorf("null index emitted: %s", body)
+	}
+}

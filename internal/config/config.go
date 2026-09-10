@@ -2,6 +2,8 @@
 package config
 
 import (
+	"wild-work/internal/auth"
+
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -182,11 +184,7 @@ func Save(c *Config, path string) error {
 	if dir := filepath.Dir(path); dir != "" {
 		_ = os.MkdirAll(dir, 0o755)
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
+	return auth.WriteFileSync(path, raw, 0o600)
 }
 
 // ParseClockTimes 将 HH:MM 列表转换为当天分钟数（0..1439）。

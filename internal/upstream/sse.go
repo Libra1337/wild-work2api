@@ -4,6 +4,7 @@ package upstream
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -24,6 +25,7 @@ func Aggregate(r io.Reader) (map[string]any, error) {
 		role          = "assistant"
 		finishReason  = "stop"
 		sawFinish     bool
+		sawDone       bool
 		usage         map[string]any
 		gotAnyContent bool
 		toolCalls     = map[int]map[string]any{}
@@ -38,7 +40,7 @@ func Aggregate(r io.Reader) (map[string]any, error) {
 		if strings.HasPrefix(line, "data: ") {
 			payload := strings.TrimPrefix(line, "data: ")
 			if payload == "[DONE]" {
-				// drain nothing; done
+				sawDone = true
 			} else {
 				var chunk map[string]any
 				if json.Unmarshal([]byte(payload), &chunk) == nil {
@@ -134,8 +136,10 @@ func Aggregate(r io.Reader) (map[string]any, error) {
 	if created == 0 {
 		created = float64(time.Now().Unix())
 	}
-	// 上游流被掐（未见 finish_reason）时的兜底：带 tool_calls 就报 tool_calls，
-	// 否则报 stop——避免把截断的调用谎报成正常文本结束。
+	if !sawDone && !sawFinish {
+		return nil, errors.New("upstream stream truncated before completion (no [DONE], no finish_reason)")
+	}
+	// 有 [DONE] 但缺 finish_reason 的宽容兜底：带 tool_calls 就报 tool_calls，否则报 stop。
 	if !sawFinish {
 		if len(toolOrder) > 0 {
 			finishReason = "tool_calls"

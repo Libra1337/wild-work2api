@@ -8,20 +8,32 @@ import (
 	"wild-work/internal/auth"
 )
 
+// top-K 随机：候选必须是按积分排序的前 K 个（u2=500 > u3=300 > u1=100，
+// K=3 时三者均可）；候选外（积分落后的大池）绝不能命中。
 func TestPickHighestCredits(t *testing.T) {
 	p := New("")
-	a1 := &auth.Auth{UID: "u1"}
-	a2 := &auth.Auth{UID: "u2"}
-	a3 := &auth.Auth{UID: "u3"}
-	p.Add(a1)
-	p.Add(a2)
-	p.Add(a3)
-	p.SetCredits("u1", 100)
-	p.SetCredits("u2", 500)
-	p.SetCredits("u3", 300)
-	got := p.Pick()
-	if got == nil || got.UID != "u2" {
-		t.Fatalf("pick=%+v want u2", got)
+	uids := []string{"u1", "u2", "u3", "u4", "u5", "u6"}
+	for _, u := range uids {
+		p.Add(&auth.Auth{UID: u})
+	}
+	for i, u := range uids {
+		p.SetCredits(u, int64(600-i*100)) // u1=600 ... u6=100
+	}
+	top := map[string]bool{"u1": true, "u2": true, "u3": true}
+	for i := 0; i < 60; i++ {
+		got := p.Pick()
+		if got == nil || !top[got.UID] {
+			t.Fatalf("pick=%v want one of top-3 (u1/u2/u3)", got)
+		}
+	}
+	// 冷却 u2/u3 后候选重排：top-3 = u1(600)/u4(300)/u5(200)，u6(100) 绝不命中
+	p.Cooldown("u2", CoolSoft, time.Hour, "t")
+	p.Cooldown("u3", CoolSoft, time.Hour, "t")
+	for i := 0; i < 20; i++ {
+		got := p.Pick()
+		if got == nil || (got.UID != "u1" && got.UID != "u4" && got.UID != "u5") {
+			t.Fatalf("pick=%v want u1/u4/u5", got)
+		}
 	}
 }
 

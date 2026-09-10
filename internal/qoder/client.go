@@ -44,6 +44,7 @@ func New() *Client {
 // NewWithTimeout 指定上游 HTTP 超时；配置连接池。
 func NewWithTimeout(timeout time.Duration) *Client {
 	tr := &http.Transport{
+		Proxy:               http.ProxyFromEnvironment,
 		MaxIdleConns:        100,
 		MaxIdleConnsPerHost: 20,
 		IdleConnTimeout:     90 * time.Second,

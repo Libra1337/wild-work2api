@@ -5,11 +5,13 @@ package app
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -80,6 +82,8 @@ type App struct {
 	sessions map[string]*adminSession
 	sessFP   string // 面板会话持久化文件（重启/部署不丢登录）
 
+	loginGuard *loginGuard // 面板登录暴破防护（按 IP 失败计数 + 锁定）
+
 	logFile *os.File
 
 	refreshMu  sync.Mutex // 防并发刷新积分
@@ -94,10 +98,11 @@ type App struct {
 // New 构建 App 并接管全局日志（写文件 + 环形缓冲）。
 func New(opts Options) (*App, error) {
 	a := &App{
-		cfgPath:  opts.ConfigPath,
-		cfg:      opts.Config,
-		runtimes: opts.Runtimes,
-		handler:  opts.Handler,
+		cfgPath:    opts.ConfigPath,
+		cfg:        opts.Config,
+		runtimes:   opts.Runtimes,
+		handler:    opts.Handler,
+		loginGuard: &loginGuard{},
 	}
 	a.loginStateFP = filepath.Join(filepath.Dir(opts.Config.StateFile), "login-state.json")
 	a.pricingFP = filepath.Join(filepath.Dir(opts.Config.StateFile), "pricing-cache.json")
@@ -454,6 +459,9 @@ func (a *App) finishLogin() {
 	a.muLogin.Unlock()
 }
 
+// ReloadAccounts 导出启动/外部触发用的账号池对齐入口。
+func (a *App) ReloadAccounts() { a.reloadAccounts() }
+
 // reloadAccounts 用 auths 目录最新文件对齐账号池。
 func (a *App) reloadAccounts() {
 	if rt := a.runtime(provider.WorkBuddy); rt != nil && rt.Pool != nil {
@@ -683,9 +691,13 @@ func (a *App) SetCheckinTimes(times []string) error {
 		return err
 	}
 	for _, rt := range a.runtimes {
-		if rt != nil && rt.Scheduler != nil {
-			rt.Scheduler.SetCheckinMinutes(clean)
+		if rt == nil || rt.Scheduler == nil {
+			continue
 		}
+		if rt.Kind == provider.Qoder {
+			continue // Qoder 无签到活动，避免面板更新把注定失败的签到重新排上
+		}
+		rt.Scheduler.SetCheckinMinutes(clean)
 	}
 	log.Printf("自动签到时间已更新：%s", strings.Join(formatted, "、"))
 	return nil
@@ -975,6 +987,10 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 			apiError(w, http.StatusBadRequest, "凭证缺少 uid 或 accessToken")
 			return
 		}
+		if !validUID(au.UID) {
+			apiError(w, http.StatusBadRequest, "凭证 uid 含非法字符（仅允许字母/数字与 -_._@）")
+			return
+		}
 		// 桌面端导出的 expiresAt 为毫秒时间戳，网关按秒处理
 		if au.ExpiresAt > 1_000_000_000_000 {
 			au.ExpiresAt /= 1000
@@ -1133,10 +1149,18 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 			writeJSON(w, http.StatusOK, map[string]any{"success": true})
 			return
 		}
+		ip := remoteIP(r)
+		if a.loginGuard.locked(ip) {
+			apiError(w, http.StatusTooManyRequests, "尝试次数过多，请 5 分钟后再试")
+			return
+		}
 		if subtle.ConstantTimeCompare([]byte(req.Password), []byte(a.cfg.AdminPassword)) != 1 {
+			a.loginGuard.fail(ip)
+			log.Printf("panel login FAILED remote=%s", ip) // 失败必须留痕，暴破才可见
 			apiError(w, http.StatusUnauthorized, "密码错误")
 			return
 		}
+		a.loginGuard.reset(ip)
 		token, err := randToken(32)
 		if err != nil {
 			apiError(w, http.StatusInternalServerError, err.Error())
@@ -1186,6 +1210,7 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 			Path:     "/",
 			HttpOnly: true,
 			SameSite: http.SameSiteLaxMode,
+			Secure:   r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https",
 			MaxAge:   -1,
 		})
 		writeJSON(w, http.StatusOK, map[string]any{"success": true})
@@ -1207,6 +1232,14 @@ type adminSession struct {
 	Expires time.Time `json:"expires"`
 }
 
+// sessionsFile 会话持久化格式。v2 增加 pw_fp（签发时的管理密码指纹）：
+// 密码变更（改 config 重启）后指纹不符，全部旧会话作废。
+// 兼容读取 v1（裸 map，无指纹，不校验）。
+type sessionsFile struct {
+	PwFP     string                   `json:"pw_fp,omitempty"`
+	Sessions map[string]*adminSession `json:"sessions"`
+}
+
 // loadSessions 启动时从磁盘恢复未过期会话（部署重启不丢登录）。
 func (a *App) loadSessions() {
 	if a.sessFP == "" {
@@ -1216,8 +1249,15 @@ func (a *App) loadSessions() {
 	if err != nil {
 		return
 	}
+	var file sessionsFile
 	var sessions map[string]*adminSession
-	if json.Unmarshal(raw, &sessions) != nil {
+	if json.Unmarshal(raw, &file) == nil && file.Sessions != nil {
+		if file.PwFP != "" && file.PwFP != pwFingerprint(a.cfg.AdminPassword) {
+			log.Printf("panel sessions dropped: admin password changed")
+			return
+		}
+		sessions = file.Sessions
+	} else if json.Unmarshal(raw, &sessions) != nil {
 		return
 	}
 	now := time.Now()
@@ -1233,19 +1273,40 @@ func (a *App) loadSessions() {
 	}
 }
 
-// saveSessionsLocked 落盘当前会话表（调用方持 sessMu）；tmp+rename 原子写。
+// saveSessionsLocked 落盘当前会话表（调用方持 sessMu）；v2 格式含密码指纹。
 func (a *App) saveSessionsLocked() {
 	if a.sessFP == "" || a.sessions == nil {
 		return
 	}
-	raw, err := json.Marshal(a.sessions)
+	raw, err := json.MarshalIndent(sessionsFile{
+		PwFP:     pwFingerprint(a.cfg.AdminPassword),
+		Sessions: a.sessions,
+	}, "", "  ")
 	if err != nil {
 		return
 	}
-	tmp := a.sessFP + ".tmp"
-	if os.WriteFile(tmp, raw, 0o600) == nil {
-		_ = os.Rename(tmp, a.sessFP)
+	_ = auth.WriteFileSync(a.sessFP, raw, 0o600)
+}
+
+// readLogTail 只读日志文件末尾 max 字节，再裁到 keep 行。
+// 整文件 ReadFile 在日志膨胀后会造成每请求的内存尖峰。
+func readLogTail(fp string, max int64, keep int) []string {
+	f, err := os.Open(fp)
+	if err != nil {
+		return []string{}
 	}
+	defer f.Close()
+	if st, err := f.Stat(); err == nil && st.Size() > max {
+		if _, err := f.Seek(-max, io.SeekEnd); err != nil {
+			return []string{}
+		}
+	}
+	buf, _ := io.ReadAll(io.LimitReader(f, max))
+	lines := strings.Split(strings.TrimLeft(string(buf), "\n"), "\n")
+	if len(lines) > keep {
+		lines = lines[len(lines)-keep:]
+	}
+	return lines
 }
 
 // authEnabled 面板鉴权是否启用（admin_password 非空）。
@@ -1280,13 +1341,107 @@ func (a *App) requireSession(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		if a.authEnabled() && r.Method != http.MethodGet {
-			if r.Header.Get("X-CSRF-Token") != s.CSRF {
+			if subtle.ConstantTimeCompare([]byte(r.Header.Get("X-CSRF-Token")), []byte(s.CSRF)) != 1 {
 				apiError(w, http.StatusForbidden, "CSRF 校验失败")
 				return
 			}
 		}
 		next(w, r)
 	}
+}
+
+// validUID 账号 UID 白名单：路径分隔符/目录跳段一律拒绝。
+// /api/account/import 把 UID 拼进落盘文件名（workbuddy-<uid>.json），
+// 无白名单则 uid="/../config" 可穿越出 auths 目录任意改写 .json 文件。
+// 真实 UID 为 UUID 形态（hex + 连字符）。
+func validUID(uid string) bool {
+	if uid == "" || len(uid) > 128 || strings.Contains(uid, "..") {
+		return false
+	}
+	for _, r := range uid {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '-' || r == '_' || r == '.' || r == '@':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// loginGuard 面板登录失败防护：单 IP 连续失败超阈值后锁定一段时间。
+// 无限试密码 + 失败不留痕 = 暴破不可见；此组件让两者都有边界与审计。
+type loginGuard struct {
+	mu    sync.Mutex
+	fails map[string]*loginFail
+}
+
+type loginFail struct {
+	count int
+	until time.Time // 非零 = 锁定截止
+}
+
+const (
+	loginFailLimit = 10              // 连续失败阈值
+	loginLockout   = 5 * time.Minute // 锁定时长
+)
+
+// locked 返回该 IP 是否处于锁定期。
+func (g *loginGuard) locked(ip string) bool {
+	if g == nil {
+		return false
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	f, ok := g.fails[ip]
+	return ok && time.Now().Before(f.until)
+}
+
+// fail 记一次失败；达到阈值进入锁定。
+func (g *loginGuard) fail(ip string) {
+	if g == nil {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.fails == nil {
+		g.fails = map[string]*loginFail{}
+	}
+	f, ok := g.fails[ip]
+	if !ok {
+		f = &loginFail{}
+		g.fails[ip] = f
+	}
+	f.count++
+	if f.count >= loginFailLimit {
+		f.until = time.Now().Add(loginLockout)
+		f.count = 0
+	}
+}
+
+// reset 成功登录清零。
+func (g *loginGuard) reset(ip string) {
+	if g == nil {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	delete(g.fails, ip)
+}
+
+// remoteIP 提取对端 IP（去端口）。
+func remoteIP(r *http.Request) string {
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return host
+	}
+	return r.RemoteAddr
+}
+
+// pwFingerprint 管理密码指纹：会话文件记录签发时的指纹，
+// 密码变更（改 config 重启）后旧会话全部失效，避免"改了密码旧登录还活着"。
+func pwFingerprint(pw string) string {
+	sum := sha256.Sum256([]byte("ww2a:" + pw))
+	return hex.EncodeToString(sum[:8])
 }
 
 // randToken 生成 n 字节随机 hex 串。

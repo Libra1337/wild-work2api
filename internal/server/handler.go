@@ -4,6 +4,7 @@ package server
 import (
 	"bufio"
 	"bytes"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -131,6 +132,9 @@ func NewHandler(cfg Config) *Handler {
 	return h
 }
 
+// Close 释放持有的资源（请求日志 journal 句柄）；进程退出时调用。
+func (h *Handler) Close() { h.reqLogs.close() }
+
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) { h.mux.ServeHTTP(w, r) }
 
 // stickyKey 粘性路由 key（按渠道独立）
@@ -207,7 +211,7 @@ func (h *Handler) withAuth(next http.HandlerFunc) http.HandlerFunc {
 				}
 				authz = "Bearer " + apiKey
 			}
-			if strings.TrimPrefix(authz, "Bearer ") != key {
+			if subtle.ConstantTimeCompare([]byte(strings.TrimPrefix(authz, "Bearer ")), []byte(key)) != 1 {
 				writeOpenAIError(w, http.StatusUnauthorized, "invalid_api_key", "missing or invalid API key")
 				return
 			}
@@ -371,16 +375,29 @@ func (h *Handler) fetchRuntimeModels(rt *Runtime) []provider.ModelInfo {
 
 func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	t0 := time.Now()
-	body, err := io.ReadAll(io.LimitReader(r.Body, 8<<20))
+	const chatBodyLimit = 8 << 20
+	body, err := io.ReadAll(io.LimitReader(r.Body, chatBodyLimit+1))
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", "read body: "+err.Error())
 		return
 	}
-	var peek struct {
-		Model  string `json:"model"`
-		Stream bool   `json:"stream"`
+	if len(body) > chatBodyLimit {
+		writeOpenAIError(w, http.StatusRequestEntityTooLarge, "invalid_request", "request body exceeds 8MiB limit")
+		return
 	}
-	_ = json.Unmarshal(body, &peek)
+	var peek struct {
+		Model    string `json:"model"`
+		Stream   bool   `json:"stream"`
+		Messages []any  `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &peek); err != nil {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", "malformed JSON body: "+err.Error())
+		return
+	}
+	if len(peek.Messages) == 0 {
+		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", "messages must be a non-empty array")
+		return
+	}
 	// @think 后缀：推理内容包装为 <think>…</think> 正文标签输出。
 	// 面向只从正文标签提取思考的客户端（ZCode OpenAI 兼容模式等），
 	// 标签形态可穿透任意中转站。例：kimi-k3-1@think / workbuddy/glm-5.3@think。
@@ -398,7 +415,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rc, uid, ok := h.dispatchChat(rt, body, w)
+	rc, uid, ok := h.dispatchChat(rt, t0, requestedModel, body, w)
 	if !ok {
 		return
 	}
@@ -447,7 +464,10 @@ func wrapThinkTag(resp map[string]any) {
 		}
 		reasoning, _ := msg["reasoning_content"].(string)
 		if reasoning == "" {
-			return
+			reasoning, _ = msg["reasoning"].(string)
+		}
+		if reasoning == "" {
+			continue
 		}
 		content, _ := msg["content"].(string)
 		msg["content"] = "<think>" + reasoning + "</think>\n" + content
@@ -459,9 +479,11 @@ func wrapThinkTag(resp map[string]any) {
 // dispatchChat 选号（粘性/刷新/换号重试）并打开上游流。
 // 失败路径自行把错误响应写入 w 并返回 ok=false；
 // 成功返回需调用方 Close 的 rc 与命中账号 uid。
-func (h *Handler) dispatchChat(rt *Runtime, body []byte, w http.ResponseWriter) (io.ReadCloser, string, bool) {
+func (h *Handler) dispatchChat(rt *Runtime, t0 time.Time, model string, body []byte, w http.ResponseWriter) (io.ReadCloser, string, bool) {
 	tried := map[string]bool{}
 	var lastErr error
+	var lastStatus int
+	var lastBody []byte // 最后一次上游错误（轮转耗尽时按原状态透传）
 	for i := 0; i < h.cfg.MaxRotate; i++ {
 		acct := h.pickWithSticky(rt)
 		if acct == nil {
@@ -505,6 +527,9 @@ func (h *Handler) dispatchChat(rt *Runtime, body []byte, w http.ResponseWriter) 
 		if status >= 400 {
 			h.stickyClear(rt)
 			kind := rt.Upstream.Classify(status, string(respBody))
+			// 账号侧错误（限流/欠费/会话死/上游 5xx）：罚号并换号重试。
+			// 客户端侧错误（400 参数/404 模型名）：换号无意义，且可能来自
+			// 中转站模型探活——若罚号，单个客户端即可把整池打入冷却雪崩。
 			switch kind {
 			case provider.ErrHardCredit:
 				rt.Pool.Cooldown(acct.UID, pool.CoolHard, h.cfg.HardCooldown, "余额/权益不足")
@@ -512,21 +537,24 @@ func (h *Handler) dispatchChat(rt *Runtime, body []byte, w http.ResponseWriter) 
 				rt.Pool.Cooldown(acct.UID, pool.CoolSoft, h.cfg.SoftCooldown, "429 rate limit")
 			case provider.ErrSessionDead:
 				rt.Pool.Disable(acct.UID, "session dead")
-			case provider.ErrNotFound:
-				rt.Pool.Cooldown(acct.UID, pool.CoolSoft, h.cfg.SoftCooldown, "upstream 404")
-			default:
+			case provider.ErrServer:
 				rt.Pool.NoteError(acct.UID, h.cfg.ErrThreshold, h.cfg.ErrCooldown)
+			default: // ErrClient / ErrNotFound：请求本身被上游拒绝，原样透传
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(status)
+				_, _ = w.Write(respBody)
+				h.finishReqLog(t0, model, rt.Kind.String(), acct.UID, status, false, 0, nil)
+				return nil, "", false
 			}
-			// 上游错误直接透传给客户端，不做包装
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(status)
-			_, _ = w.Write(respBody)
-			return nil, "", false
+			lastErr = &provider.Error{Kind: kind, Status: status, Msg: string(respBody)}
+			lastStatus, lastBody = status, respBody
+			continue
 		}
 		// 卡流检测：流打开后 firstContentTimeout 内未出现首个内容块
 		// （content/reasoning_content/tool_calls），视为该账号/模型卡死，
 		// 关流换号重试，避免把死流耗到客户端超时。
 		// 探测阶段消费的字节（含携带 tool_call id/name 的首片）必须回放。
+		rc = newIdleWatchdog(rc, streamIdleTimeout)
 		brc := &bufferedStream{br: bufio.NewReaderSize(rc, 64*1024), rc: rc}
 		var sink bytes.Buffer
 		progress := make(chan error, 1)
@@ -553,11 +581,20 @@ func (h *Handler) dispatchChat(rt *Runtime, body []byte, w http.ResponseWriter) 
 		h.stickySuccess(rt)
 		return brc, acct.UID, true
 	}
+	if lastBody != nil {
+		// 轮转耗尽且最后一次是上游侧错误：按原状态透传（比笼统 503 更利于客户端/中转站判断）
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(lastStatus)
+		_, _ = w.Write(lastBody)
+		h.finishReqLog(t0, model, rt.Kind.String(), "", lastStatus, false, 0, nil)
+		return nil, "", false
+	}
 	msg := "all accounts unavailable (cooling/disabled)"
 	if lastErr != nil {
 		msg += ": " + lastErr.Error()
 	}
 	writeOpenAIError(w, http.StatusServiceUnavailable, "no_healthy_account", msg)
+	h.finishReqLog(t0, model, rt.Kind.String(), "", http.StatusServiceUnavailable, false, 0, nil)
 	return nil, "", false
 }
 

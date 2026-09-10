@@ -257,7 +257,7 @@ func (h *Handler) anthropicMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rc, uid, ok := h.dispatchChat(rt, chatBody, w)
+	rc, uid, ok := h.dispatchChat(rt, t0, "anthropic/"+peek.Model, chatBody, w)
 	if !ok {
 		// dispatchChat 已按 OpenAI 错误格式写入；Anthropic 客户端也能读出 JSON 错误体
 		return
@@ -354,6 +354,7 @@ func anthropicRelay(w http.ResponseWriter, rc io.ReadCloser, model string) map[s
 	h.Set("Connection", "keep-alive")
 	fl, _ := w.(http.Flusher)
 	msgID := anthropicMsgID()
+	dead := false
 	var (
 		started    bool
 		nextIdx    int
@@ -367,12 +368,18 @@ func anthropicRelay(w http.ResponseWriter, rc io.ReadCloser, model string) map[s
 		toolMeta   = map[int][2]string{} // 上游 tool index -> {id, name}（块重开时保留标识）
 	)
 	emit := func(event string, payload map[string]any) {
+		if dead {
+			return
+		}
 		payload["type"] = event
 		raw, err := json.Marshal(payload)
 		if err != nil {
 			return
 		}
-		_, _ = io.WriteString(w, "event: "+event+"\ndata: "+string(raw)+"\n\n")
+		if _, err := io.WriteString(w, "event: "+event+"\ndata: "+string(raw)+"\n\n"); err != nil {
+			dead = true // 客户端断开：停止读取上游，不再烧账号额度
+			return
+		}
 		if fl != nil {
 			fl.Flush()
 		}
@@ -402,6 +409,9 @@ func anthropicRelay(w http.ResponseWriter, rc io.ReadCloser, model string) map[s
 	sc := bufio.NewScanner(rc)
 	sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
 	for sc.Scan() {
+		if dead {
+			return usage
+		}
 		line := sc.Text()
 		payload, ok := trimDataPrefix(strings.TrimSpace(line))
 		if !ok || payload == "" {
@@ -502,6 +512,9 @@ func anthropicRelay(w http.ResponseWriter, rc io.ReadCloser, model string) map[s
 			sawFinish = true
 		case "length":
 			stopReason = "max_tokens"
+			sawFinish = true
+		case "content_filter":
+			stopReason = "refusal"
 			sawFinish = true
 		case "stop":
 			sawFinish = true

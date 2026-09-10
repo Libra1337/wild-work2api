@@ -97,3 +97,38 @@ func (b *bufferedStream) Read(p []byte) (int, error) {
 }
 
 func (b *bufferedStream) Close() error { return b.rc.Close() }
+
+// streamIdleTimeout 上游流中途空闲上限。首块有 firstContentTimeout 兜底，
+// 但 body 读取无任何超时（stream transport 不约束响应体），上游中途沉默
+// 会把 handler goroutine 与客户端连接挂到天荒地老。正常生成即使深度思考
+// 也有持续 delta；5 分钟零字节视为死流，强制关闭换错误帧收尾。
+const streamIdleTimeout = 5 * time.Minute
+
+// idleWatchdog 上游流空闲看门狗：每次成功 Read 续期，超时未续期则关闭
+// 底层 body，让所有读者（卡流探测/中继/聚合）立即以错误收场。
+// timer.Reset 与 AfterFunc 回调存在良序竞争（最坏提前一个窗口关流），
+// 相比永久挂死可接受。
+type idleWatchdog struct {
+	rc      io.ReadCloser
+	timeout time.Duration
+	timer   *time.Timer
+}
+
+func newIdleWatchdog(rc io.ReadCloser, d time.Duration) *idleWatchdog {
+	w := &idleWatchdog{rc: rc, timeout: d}
+	w.timer = time.AfterFunc(d, func() { _ = rc.Close() })
+	return w
+}
+
+func (w *idleWatchdog) Read(p []byte) (int, error) {
+	n, err := w.rc.Read(p)
+	if err == nil && n > 0 {
+		w.timer.Reset(w.timeout)
+	}
+	return n, err
+}
+
+func (w *idleWatchdog) Close() error {
+	w.timer.Stop()
+	return w.rc.Close()
+}

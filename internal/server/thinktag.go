@@ -97,13 +97,24 @@ func (t *thinkTagWriter) writeLine(line string) error {
 		delete(delta, "reasoning_content")
 		delete(delta, "reasoning")
 		if rv != "" {
+			cv, hasCv := delta["content"].(string)
 			if !t.inThink {
 				t.inThink = true
-				delta["content"] = "<think>" + rv
+				rv = "<think>" + rv
+			}
+			if hasCv {
+				// 同帧携带推理+正文（少见形态）：正文前先闭合标签，避免正文被吞
+				delta["content"] = rv + "</think>\n" + cv
+				t.closedThink = true
 			} else {
 				delta["content"] = rv
 			}
 			continue
+		}
+		// 终帧（finish_reason）到达而标签未闭合：先补闭合帧再写终帧，
+		// 否则闭合帧会落在 finish_reason 之后（客户端可能已按完成收尾）。
+		if fr, _ := c["finish_reason"].(string); fr != "" && t.inThink && !t.closedThink {
+			t.emitCloseThink(c["index"])
 		}
 		// 推理结束后的首个实质帧（正文/工具调用）前插入闭合标签
 		if t.inThink && !t.closedThink {
@@ -118,6 +129,9 @@ func (t *thinkTagWriter) writeLine(line string) error {
 }
 
 func (t *thinkTagWriter) emitCloseThink(index any) {
+	if index == nil {
+		index = 0
+	}
 	t.closedThink = true
 	_ = t.writeChunk(map[string]any{
 		"choices": []any{map[string]any{

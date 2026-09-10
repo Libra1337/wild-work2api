@@ -130,6 +130,7 @@ func (c *Client) setEfforts(m map[string][]string) {
 func New() *Client {
 	// 短 RPC（刷新/签到/余额/模型）：总超时 120s
 	tr := &http.Transport{
+		Proxy:               http.ProxyFromEnvironment,
 		MaxIdleConns:        100,
 		MaxIdleConnsPerHost: 20,
 		IdleConnTimeout:     90 * time.Second,
@@ -137,6 +138,7 @@ func New() *Client {
 	}
 	// 聊天流专用：无总超时（长输出不被掐断），仅约束响应头与空闲连接
 	streamTr := &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
 		MaxIdleConns:          100,
 		MaxIdleConnsPerHost:   32,
 		IdleConnTimeout:       300 * time.Second,
@@ -171,15 +173,15 @@ func (c *Client) billingClient() *http.Client {
 	return c.HTTP
 }
 
-func (c *Client) chatBase(a *auth.Auth) string {
-	if a != nil && a.Region() == "global" {
+func (c *Client) chatBase(region string) string {
+	if region == "global" {
 		return c.ChatBaseGlobal
 	}
 	return c.ChatBaseCN
 }
 
-func (c *Client) billingBase(a *auth.Auth) string {
-	if a != nil && a.Region() == "global" {
+func (c *Client) billingBase(region string) string {
+	if region == "global" {
 		return c.BillingBaseGlob
 	}
 	return c.BillingBaseCN
@@ -232,7 +234,7 @@ func (c *Client) RefreshToken(a *auth.Auth) error {
 		log.Printf("workbuddy refresh failed uid=%s err=%v", a.UID, err)
 		return err
 	}
-	url := c.chatBase(a) + "/v2/plugin/auth/token/refresh"
+	url := c.chatBase(auth.RegionOf(a.Domain)) + "/v2/plugin/auth/token/refresh"
 	req, err := http.NewRequest(http.MethodPost, url, nil)
 	if err != nil {
 		return err
@@ -273,7 +275,8 @@ func (c *Client) RefreshToken(a *auth.Auth) error {
 // 非 2xx 时 rc 为 nil、body 为上游响应体（供调用方 Classify(status, string(body))）、err 为 nil；
 // 只有传输层失败才返回 err。
 func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status int, respBody []byte, err error) {
-	url := c.chatBase(a) + "/v2/chat/completions"
+	snap := a.Snapshot()
+	url := c.chatBase(snap.Region) + "/v2/chat/completions"
 	prepared := PrepareBodyOptWithEfforts(body, c.SanitizeFingerprints, c.effortsSnapshot())
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(prepared))
 	if err != nil {
@@ -306,14 +309,15 @@ type ModelInfo = provider.ModelInfo
 // FetchModels 调上游动态模型接口。
 // 字段名与上游实际返回对齐：maxInputTokens（非 contextWindow）、maxOutputTokens（非 maxTokens）。
 func (c *Client) FetchModels(a *auth.Auth) ([]ModelInfo, error) {
-	url := c.chatBase(a) + "/console/enterprises/personal/models"
+	snap := a.Snapshot()
+	url := c.chatBase(snap.Region) + "/console/enterprises/personal/models"
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+a.AccessToken)
+	req.Header.Set("Authorization", "Bearer "+snap.AccessToken)
 	req.Header.Set("Accept", "application/json")
-	origin := originRefererFor(a)
+	origin := originRefererFor(snap.Region)
 	req.Header.Set("Origin", origin)
 	req.Header.Set("Referer", origin+"/")
 	req.Header.Set("User-Agent", clientUA)
@@ -407,7 +411,7 @@ func (c *Client) FetchModels(a *auth.Auth) ([]ModelInfo, error) {
 
 // UserResource 查询账号当前可花费积分余额（所有套餐 CycleCapacity 聚合，负值钳 0）。
 func (c *Client) UserResource(a *auth.Auth) (remain int64, err error) {
-	url := c.billingBase(a) + "/v2/billing/meter/get-user-resource"
+	url := c.billingBase(a.Region()) + "/v2/billing/meter/get-user-resource"
 	now := time.Now()
 	body := map[string]any{
 		"PageNumber":               1,
@@ -465,7 +469,7 @@ func (c *Client) UserResource(a *auth.Auth) (remain int64, err error) {
 
 // UserResourceDetail 查询账号积分明细（所有套餐条目）。
 func (c *Client) UserResourceDetail(a *auth.Auth) (int64, []provider.ResourceItem, error) {
-	url := c.billingBase(a) + "/v2/billing/meter/get-user-resource"
+	url := c.billingBase(a.Region()) + "/v2/billing/meter/get-user-resource"
 	now := time.Now()
 	body := map[string]any{
 		"PageNumber":               1,
@@ -532,7 +536,7 @@ func (c *Client) UserResourceDetail(a *auth.Auth) (int64, []provider.ResourceIte
 // DailyCheckin 执行每日签到。已签到（业务 code 非 0）也返回错误，调用方按 msg 区分。
 func (c *Client) DailyCheckin(a *auth.Auth) error {
 	log.Printf("workbuddy checkin start uid=%s", a.UID)
-	url := c.billingBase(a) + "/v2/billing/meter/daily-checkin"
+	url := c.billingBase(a.Region()) + "/v2/billing/meter/daily-checkin"
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader([]byte("{}")))
 	if err != nil {
 		return err
@@ -559,14 +563,15 @@ func (c *Client) Aggregate(r io.Reader) (map[string]any, error) { return Aggrega
 // FetchModelPricing 从 /console/enterprises/personal/models 拉取模型积分倍率。
 // 返回全量模型定价（含 credits 字段），不受 cli agent 过滤限制。
 func (c *Client) FetchModelPricing(a *auth.Auth) ([]provider.ModelPricing, error) {
-	url := c.chatBase(a) + "/console/enterprises/personal/models"
+	snap := a.Snapshot()
+	url := c.chatBase(snap.Region) + "/console/enterprises/personal/models"
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+a.AccessToken)
+	req.Header.Set("Authorization", "Bearer "+snap.AccessToken)
 	req.Header.Set("Accept", "application/json")
-	origin := originRefererFor(a)
+	origin := originRefererFor(snap.Region)
 	req.Header.Set("Origin", origin)
 	req.Header.Set("Referer", origin+"/")
 	req.Header.Set("User-Agent", clientUA)

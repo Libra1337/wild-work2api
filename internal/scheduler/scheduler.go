@@ -26,6 +26,9 @@ type Config struct {
 	CheckinHours   []int  // 旧配置兼容，整点小时
 	CheckinMinutes []int  // 当天分钟数，优先于 CheckinHours
 	KeepaliveHours []int  // 默认 [22]
+	// SkipCheckin 平台无签到活动（如 Qoder）时置真：不注入默认签到时间，
+	// 调度器只做 keepalive；否则 New 的默认值会让每账号每天两次注定失败的签到。
+	SkipCheckin bool
 }
 
 // Scheduler 调度器。
@@ -39,7 +42,7 @@ type Scheduler struct {
 
 // New 构建。
 func New(cfg Config) *Scheduler {
-	if len(cfg.CheckinMinutes) == 0 {
+	if !cfg.SkipCheckin && len(cfg.CheckinMinutes) == 0 {
 		if len(cfg.CheckinHours) > 0 {
 			cfg.CheckinMinutes = make([]int, 0, len(cfg.CheckinHours))
 			for _, h := range cfg.CheckinHours {

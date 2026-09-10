@@ -222,12 +222,10 @@ func TestDailyCheckinAlready(t *testing.T) {
 
 func TestRegionBases(t *testing.T) {
 	c := testClient(nil)
-	cn := &auth.Auth{Domain: ""}
-	gl := &auth.Auth{Domain: "www.workbuddy.ai"}
-	if c.chatBase(cn) != "https://chat.example" || c.billingBase(cn) != "https://billing.example" {
+	if c.chatBase(auth.RegionOf("")) != "https://chat.example" || c.billingBase(auth.RegionOf("")) != "https://billing.example" {
 		t.Error("cn bases wrong")
 	}
-	if c.chatBase(gl) != "https://gchat.example" || c.billingBase(gl) != "https://gbilling.example" {
+	if c.chatBase(auth.RegionOf("www.workbuddy.ai")) != "https://gchat.example" || c.billingBase(auth.RegionOf("www.workbuddy.ai")) != "https://gbilling.example" {
 		t.Error("global bases wrong")
 	}
 }

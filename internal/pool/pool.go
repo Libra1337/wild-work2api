@@ -4,6 +4,7 @@ package pool
 
 import (
 	"encoding/json"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"sort"
@@ -137,17 +138,23 @@ func (p *Pool) SyncToDir(auths []*auth.Auth) {
 	}
 }
 
-// Pick 返回 healthy 中积分最高的账号；无可用返回 nil。
+// Pick 返回 healthy 账号（top-K 随机）；无可用返回 nil。
 func (p *Pool) Pick() *auth.Auth {
 	return p.PickExcluding(nil)
 }
+
+// pickTopK healthy 候选按积分降序取前 K 个，随机命中其一。
+// 纯"最高积分"会让全部流量压在同一号上直到 429/欠费——尤其粘性过期后
+// 重新 Pick 又选回同一号，"50 次轮换"形同虚设。top-3 随机兼顾余额
+// 均衡与负载分散。
+const pickTopK = 3
 
 // PickExcluding 同上，但跳过 tried 中的 uid（请求级轮换）。
 func (p *Pool) PickExcluding(tried map[string]bool) *auth.Auth {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	now := time.Now()
-	var best *entry
+	var cand []*entry
 	for uid, e := range p.byUID {
 		if tried != nil && tried[uid] {
 			continue
@@ -155,14 +162,16 @@ func (p *Pool) PickExcluding(tried map[string]bool) *auth.Auth {
 		if !e.healthy(now) {
 			continue
 		}
-		if best == nil || e.credits > best.credits {
-			best = e
-		}
+		cand = append(cand, e)
 	}
-	if best == nil {
+	if len(cand) == 0 {
 		return nil
 	}
-	return best.a
+	sort.Slice(cand, func(i, j int) bool { return cand[i].credits > cand[j].credits })
+	if len(cand) > pickTopK {
+		cand = cand[:pickTopK]
+	}
+	return cand[rand.Intn(len(cand))].a
 }
 
 // SetCredits 更新账号余额。
@@ -376,9 +385,5 @@ func (p *Pool) saveLocked() {
 	if dir := filepath.Dir(p.stateFp); dir != "" {
 		_ = os.MkdirAll(dir, 0o755)
 	}
-	tmp := p.stateFp + ".tmp"
-	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
-		return
-	}
-	_ = os.Rename(tmp, p.stateFp)
+	_ = auth.WriteFileSync(p.stateFp, raw, 0o600)
 }

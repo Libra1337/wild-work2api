@@ -275,13 +275,20 @@ func (h *Handler) responsesRelay(w http.ResponseWriter, rc io.ReadCloser, model 
 	msgIdx := -1
 	nextIdx := 0
 	seq := 0
+	dead := false
 
 	emit := func(evtType string, payload map[string]any) {
+		if dead {
+			return
+		}
 		payload["type"] = evtType
 		payload["sequence_number"] = seq
 		seq++
 		data, _ := json.Marshal(payload)
-		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", evtType, data)
+		if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", evtType, data); err != nil {
+			dead = true // 客户端断开：停止读取上游，不再烧账号额度
+			return
+		}
 		if f, ok := w.(http.Flusher); ok {
 			f.Flush()
 		}
@@ -316,6 +323,9 @@ func (h *Handler) responsesRelay(w http.ResponseWriter, rc io.ReadCloser, model 
 	sawFinish := false
 	sawDone := false
 	for scanner.Scan() {
+		if dead {
+			return usage, ttfb
+		}
 		line := scanner.Text()
 		if !strings.HasPrefix(line, "data:") {
 			continue
@@ -612,9 +622,7 @@ func (h *Handler) responses(w http.ResponseWriter, r *http.Request) {
 		writeResponsesError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	_ = rt
-
-	rc, uid, ok := h.dispatchChat(rt, chatBody, w)
+	rc, uid, ok := h.dispatchChat(rt, t0, model, chatBody, w)
 	if !ok {
 		return // dispatchChat 已写错误响应
 	}

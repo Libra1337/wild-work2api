@@ -63,7 +63,41 @@ func (a *Auth) NeedsRefreshLocked(within time.Duration) bool {
 
 // Region 返回 "cn" 或 "global"。domain 为空视为 CN（向后兼容）。
 func (a *Auth) Region() string {
-	d := strings.ToLower(strings.TrimSpace(a.Domain))
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return RegionOf(a.Domain)
+}
+
+// HeaderSnapshot 请求头构建所需的并发安全字段快照。
+// AccessToken/Domain 等 string 是双字头：与 RefreshToken 的写锁并发裸读
+// 可能撕裂出错乱的 Authorization；所有持锁外构建上游请求头的路径必须经此快照。
+type HeaderSnapshot struct {
+	AccessToken  string
+	RefreshToken string
+	UID          string
+	EnterpriseID string
+	Domain       string
+	Region       string
+}
+
+// Snapshot 返回 HeaderSnapshot（持读锁）。
+func (a *Auth) Snapshot() HeaderSnapshot {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return HeaderSnapshot{
+		AccessToken:  a.AccessToken,
+		RefreshToken: a.RefreshToken,
+		UID:          a.UID,
+		EnterpriseID: a.EnterpriseID,
+		Domain:       a.Domain,
+		Region:       RegionOf(a.Domain),
+	}
+}
+
+// RegionOf 由 domain 判定 region；供已在锁内直接持有 Domain 的调用方使用
+// （如 RefreshToken 全程持写锁，不能再经 Region() 拿读锁——RWMutex 不可重入）。
+func RegionOf(domain string) string {
+	d := strings.ToLower(strings.TrimSpace(domain))
 	if d == "workbuddy.ai" || strings.HasSuffix(d, ".workbuddy.ai") {
 		return "global"
 	}
@@ -201,11 +235,30 @@ func (a *Auth) saveAtomicLocked() error {
 	if err != nil {
 		return err
 	}
-	tmp := a.FilePath + ".tmp"
-	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+	return WriteFileSync(a.FilePath, raw, 0o600)
+}
+
+// WriteFileSync 先写 .tmp 并 fsync，再原子 rename 替换。
+// 仅 WriteFile+rename 不保证内容落盘：断电/崩溃可留下半截或空文件
+// （rename 只保证名字原子性）。pool/config/panel 会话等持久化共用此助手。
+func WriteFileSync(fp string, raw []byte, perm os.FileMode) error {
+	tmp := fp + ".tmp"
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, a.FilePath)
+	if _, err := f.Write(raw); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp, fp)
 }
 
 // LoadDir 扫描 dir 下 workbuddy*.json，只收 wantRegion（"cn"/"global"）。

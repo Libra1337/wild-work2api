@@ -120,7 +120,7 @@ func main() {
 	wbSch := scheduler.New(scheduler.Config{Pool: wbPool, Upstream: wbUp, Name: "workbuddy", CheckinMinutes: checkinMinutes, KeepaliveHours: cfg.Schedule.KeepaliveHours})
 	trSch := scheduler.New(scheduler.Config{Pool: trPool, Upstream: trUp, Name: "traework", CheckinMinutes: checkinMinutes, KeepaliveHours: cfg.Schedule.KeepaliveHours})
 	// Qoder 无签到活动：调度器只做 token keepalive（每日 refresh 保活）
-	qdSch := scheduler.New(scheduler.Config{Pool: qdPool, Upstream: qdUp, Name: "qoder", CheckinMinutes: nil, KeepaliveHours: cfg.Schedule.KeepaliveHours})
+	qdSch := scheduler.New(scheduler.Config{Pool: qdPool, Upstream: qdUp, Name: "qoder", KeepaliveHours: cfg.Schedule.KeepaliveHours, SkipCheckin: true})
 
 	runtimes := map[provider.Kind]*server.Runtime{
 		provider.WorkBuddy: {Kind: provider.WorkBuddy, Pool: wbPool, Upstream: wbUp, StaticModels: server.WorkBuddyStaticModels()},
@@ -169,6 +169,11 @@ func main() {
 		AttachAPI:            appInst.HandleAPI,
 	})
 	appInst.SetHandler(h)
+	defer h.Close() // 关闭请求日志 journal 文件句柄
+
+	// 启动即对齐账号池：清掉 state 里已无凭证文件的幽灵条目
+	// （否则幽灵顶着旧 credits 参与 Pick，刷新必败并反复烧轮转名额）。
+	appInst.ReloadAccounts()
 
 	if err := appInst.StartServer(); err != nil {
 		log.Printf("listen %s failed: %v（面板中将提示）", cfg.Listen.Addr(), err)
@@ -177,9 +182,20 @@ func main() {
 	// 调度器后台运行
 	sctx, stop := context.WithCancel(context.Background())
 	defer stop()
-	go wbSch.Run(sctx)
-	go trSch.Run(sctx)
-	go qdSch.Run(sctx)
+	// 调度器 panic 兜底：崩溃只损失定时任务，不能带死整个网关进程
+	runSch := func(name string, run func(context.Context)) {
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("PANIC: scheduler %s: %v", name, r)
+				}
+			}()
+			run(sctx)
+		}()
+	}
+	runSch("workbuddy", wbSch.Run)
+	runSch("traework", trSch.Run)
+	runSch("qoder", qdSch.Run)
 
 	// 启动提示（非 --autostart）：系统通知
 	if !autostart && !noTray {

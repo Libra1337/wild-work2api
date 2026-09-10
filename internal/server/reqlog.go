@@ -179,11 +179,11 @@ func (t *usageTee) Write(p []byte) (int, error) {
 		}
 		line := string(t.buf[:i])
 		t.buf = t.buf[i+1:]
-		if len(line) > 6 && line[:6] == "data: " {
+		if payload, ok := trimDataPrefix(line); ok && payload != "" {
 			var chunk struct {
 				Usage map[string]any `json:"usage"`
 			}
-			if json.Unmarshal([]byte(line[6:]), &chunk) == nil && chunk.Usage != nil {
+			if json.Unmarshal([]byte(payload), &chunk) == nil && chunk.Usage != nil {
 				t.usage = chunk.Usage
 			}
 		}
