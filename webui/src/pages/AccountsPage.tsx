@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react"
 import {
   CalendarCheck2,
-  CheckCircle2,
   Coins,
   ExternalLink,
   FileJson,

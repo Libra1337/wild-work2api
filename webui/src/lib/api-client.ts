@@ -82,13 +82,13 @@ export const api = {
     request<import("@/types").SimpleResult>("/account/checkin", { uid }),
 
   accountCheckinAll: () =>
-    request<import("@/types").SimpleResult>("/account/checkin_all", {}),
+    request<import("@/types").CheckinAllResult>("/account/checkin_all", {}),
 
   accountRefresh: (uid: string) =>
     request<import("@/types").SimpleResult>("/account/refresh", { uid }),
 
   accountRefreshAll: () =>
-    request<import("@/types").SimpleResult>("/account/refresh_all", {}),
+    request<import("@/types").RefreshAllResult>("/account/refresh_all", {}),
 
   accountRemove: (uid: string) =>
     request<import("@/types").SimpleResult>("/account/remove", { uid }),
