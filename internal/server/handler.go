@@ -542,12 +542,16 @@ func (h *Handler) runtimeForModel(model string) (*Runtime, string, error) {
 	return nil, "", fmt.Errorf("model %q not found; use explicit prefix: workbuddy/<model> / traework/<model> / qoder/<model>", model)
 }
 
-// runtimeForModelWithFallback 先按原样解析；失败时改用 fallback 模型名重试
-// （Anthropic 客户端常发 claude-* 等模型名，需映射到网关真实模型）。
+// runtimeForModelWithFallback 先按原样解析；解析出的裸模型名未在渠道模型表
+// 命中（如 claude-* 等 Anthropic 客户端模型名）时改用 fallback 模型。
 func (h *Handler) runtimeForModelWithFallback(model, fallback string) (*Runtime, string, error) {
 	rt, m, err := h.runtimeForModel(model)
 	if err == nil {
-		return rt, m, nil
+		if m != model || h.modelKnown(rt, m) {
+			return rt, m, nil
+		}
+		// 单渠道兜底放行的未知裸模型名：上游大概率不认，走 fallback
+		err = fmt.Errorf("model %q not in channel model list", m)
 	}
 	if fallback != "" && fallback != model {
 		if rt2, m2, err2 := h.runtimeForModel(fallback); err2 == nil {
@@ -556,6 +560,20 @@ func (h *Handler) runtimeForModelWithFallback(model, fallback string) (*Runtime,
 		}
 	}
 	return nil, "", err
+}
+
+// modelKnown 判断模型是否在渠道模型表（动态缓存 → 静态兜底）中。
+func (h *Handler) modelKnown(rt *Runtime, model string) bool {
+	infos := h.fetchRuntimeModels(rt)
+	if len(infos) == 0 {
+		infos = rt.StaticModels
+	}
+	for _, mi := range infos {
+		if mi.ID == model {
+			return true
+		}
+	}
+	return false
 }
 
 func rewriteModel(body []byte, model string) ([]byte, error) {
