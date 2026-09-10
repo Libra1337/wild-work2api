@@ -2,6 +2,16 @@ import type { ApiError } from "@/types"
 
 const API_BASE = "/api"
 
+let _csrfToken: string | null = null
+
+export function setCsrfToken(token: string | null) {
+  _csrfToken = token
+}
+
+export function getCsrfToken() {
+  return _csrfToken
+}
+
 class ApiClientError extends Error {
   status: number
   data: ApiError
@@ -19,21 +29,29 @@ async function request<T>(
   path: string,
   body?: unknown,
 ): Promise<T> {
-  const options: RequestInit | undefined =
-    body === undefined
-      ? undefined
-      : {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-          credentials: "same-origin",
-        }
+  const isPost = body !== undefined
+  const headers: Record<string, string> = {}
 
-  const res = await fetch(`${API_BASE}${path}`, options)
+  if (isPost) {
+    headers["Content-Type"] = "application/json"
+    if (_csrfToken) {
+      headers["X-CSRF-Token"] = _csrfToken
+    }
+  }
+
+  const res = await fetch(`${API_BASE}${path}`, {
+    method: isPost ? "POST" : "GET",
+    headers,
+    body: isPost ? JSON.stringify(body) : undefined,
+    credentials: "same-origin",
+  })
 
   const data = (await res.json().catch(() => ({}))) as ApiError
 
   if (!res.ok) {
+    if (res.status === 401) {
+      setCsrfToken(null)
+    }
     throw new ApiClientError(res.status, data)
   }
 
@@ -41,6 +59,14 @@ async function request<T>(
 }
 
 export const api = {
+  session: () => request<import("@/types").SessionInfo>("/session"),
+
+  login: (password: string) =>
+    request<import("@/types").LoginResult>("/login", { password }),
+
+  logout: () =>
+    request<import("@/types").LogoutResult>("/logout", {}),
+
   getState: () => request<import("@/types").AppState>("/state"),
 
   loginStart: (channel: string) =>
@@ -88,7 +114,8 @@ export const api = {
 
   fees: () => request<import("@/types").FeesInfo>("/fees"),
 
-  feesRefresh: () => request<import("@/types").SimpleResult>("/fees/refresh", {}),
+  feesRefresh: () =>
+    request<import("@/types").SimpleResult>("/fees/refresh", {}),
 
   logs: () => request<import("@/types").LogsData>("/logs"),
 }

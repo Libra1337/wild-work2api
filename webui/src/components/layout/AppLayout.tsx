@@ -1,14 +1,16 @@
-import { NavLink, Outlet, useLocation } from "react-router-dom"
+import { NavLink, Outlet, useNavigate, useLocation } from "react-router-dom"
 import {
   LayoutDashboard,
   Key,
   ShieldCheck,
   ClipboardList,
+  LogOut,
   ChevronDown,
   User,
   Palette,
   Check,
 } from "lucide-react"
+import { useAuth } from "@/hooks/use-auth"
 import { useDashboardTheme } from "@/components/theme/theme-context"
 import { LogoMark } from "@/components/shared/LogoMark"
 import { buttonVariants } from "@/components/ui/button-variants"
@@ -44,7 +46,7 @@ function GitHubMark(props: SVGProps<SVGSVGElement>) {
   )
 }
 
-function UserMenu() {
+function UserMenu({ onLogout }: { onLogout: () => void }) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
   const { mode, theme, options, setMode } = useDashboardTheme()
@@ -112,6 +114,17 @@ function UserMenu() {
               })}
             </div>
           </div>
+          <div className="border-t border-border" />
+          <button
+            onClick={() => {
+              setOpen(false)
+              onLogout()
+            }}
+            className="flex w-full items-center gap-2 px-3 py-2 text-sm text-destructive transition-colors hover:bg-destructive/10"
+          >
+            <LogOut className="size-4" />
+            退出登录
+          </button>
         </div>
       )}
     </div>
@@ -119,7 +132,27 @@ function UserMenu() {
 }
 
 export default function AppLayout() {
+  const { isAuthenticated, isLoading, logout } = useAuth()
+  const navigate = useNavigate()
   const location = useLocation()
+
+  if (isLoading) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-background">
+        <div className="text-muted-foreground text-sm">加载中...</div>
+      </div>
+    )
+  }
+
+  if (!isAuthenticated) {
+    navigate("/admin/login", { replace: true })
+    return null
+  }
+
+  const handleLogout = async () => {
+    await logout()
+    navigate("/admin/login", { replace: true })
+  }
 
   const title = pageTitles[location.pathname] || "wild-work2api"
 
@@ -164,12 +197,14 @@ export default function AppLayout() {
         </nav>
 
         {/* Sidebar footer */}
-        <div className="border-t border-sidebar-border p-4">
-          <p className="text-[11px] leading-relaxed text-sidebar-foreground/45">
-            仅供个人学习研究
-            <br />
-            请遵守各上游平台服务条款
-          </p>
+        <div className="border-t border-sidebar-border p-3">
+          <button
+            onClick={handleLogout}
+            className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-[13px] text-sidebar-foreground/50 transition-colors hover:bg-sidebar-accent/55 hover:text-sidebar-foreground"
+          >
+            <LogOut className="size-4" />
+            退出登录
+          </button>
         </div>
       </aside>
 
@@ -194,7 +229,7 @@ export default function AppLayout() {
             >
               <GitHubMark className="size-6" />
             </a>
-            <UserMenu />
+            <UserMenu onLogout={handleLogout} />
           </div>
         </header>
 

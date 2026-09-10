@@ -88,11 +88,12 @@ func ParseListen(s string) (Listen, error) {
 
 // Config 顶层配置。
 type Config struct {
-	Listen    Listen `json:"listen"`
-	APIKey    string `json:"api_key"`    // 空 = 不鉴权
-	AuthDir   string `json:"auth_dir"`   // ./auths
-	StateFile string `json:"state_file"` // ./data/state.json
-	Region    string `json:"region"`     // 只收 "cn"
+	Listen        Listen `json:"listen"`
+	APIKey        string `json:"api_key"`        // 空 = 不鉴权
+	AdminPassword string `json:"admin_password"` // 面板登录密码；空 = 面板不鉴权（本机桌面模式）
+	AuthDir       string `json:"auth_dir"`       // ./auths
+	StateFile     string `json:"state_file"`     // ./data/state.json
+	Region        string `json:"region"`         // 只收 "cn"
 
 	Cooldown struct {
 		HardCredit  string `json:"hard_credit"`   // "12h"

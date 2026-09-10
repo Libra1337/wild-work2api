@@ -1,5 +1,6 @@
 import { HashRouter, Navigate, Route, Routes } from "react-router-dom"
 import AppLayout from "@/components/layout/AppLayout"
+import LoginPage from "@/pages/LoginPage"
 import DashboardPage from "@/pages/DashboardPage"
 import AccountsPage from "@/pages/AccountsPage"
 import ApiPage from "@/pages/ApiPage"
@@ -19,6 +20,7 @@ export default function App() {
     <HashRouter>
       <Routes>
         <Route path="/" element={<Navigate to="/admin/dashboard" replace />} />
+        <Route path="/admin/login" element={<LoginPage />} />
         <Route path="/admin" element={<AppLayout />}>
           <Route index element={<Navigate to="/admin/dashboard" replace />} />
           <Route path="dashboard" element={<DashboardPage />} />

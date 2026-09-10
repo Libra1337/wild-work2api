@@ -4,6 +4,9 @@ package app
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,8 +25,8 @@ import (
 	"wild-work/internal/login"
 	loginqoder "wild-work/internal/login_qoder"
 	logintrae "wild-work/internal/login_trae"
-	"wild-work/internal/pool"
 	"wild-work/internal/platform"
+	"wild-work/internal/pool"
 	"wild-work/internal/provider"
 	"wild-work/internal/qoder"
 	"wild-work/internal/scheduler"
@@ -73,6 +76,9 @@ type App struct {
 	loginKind    provider.Kind
 	pricingFP    string
 
+	sessMu   sync.Mutex // 保护面板会话表
+	sessions map[string]*adminSession
+
 	logFile *os.File
 
 	refreshMu  sync.Mutex // 防并发刷新积分
@@ -87,10 +93,10 @@ type App struct {
 // New 构建 App 并接管全局日志（写文件 + 环形缓冲）。
 func New(opts Options) (*App, error) {
 	a := &App{
-		cfgPath:    opts.ConfigPath,
-		cfg:        opts.Config,
-		runtimes:   opts.Runtimes,
-		handler:    opts.Handler,
+		cfgPath:  opts.ConfigPath,
+		cfg:      opts.Config,
+		runtimes: opts.Runtimes,
+		handler:  opts.Handler,
 	}
 	a.loginStateFP = filepath.Join(filepath.Dir(opts.Config.StateFile), "login-state.json")
 	a.pricingFP = filepath.Join(filepath.Dir(opts.Config.StateFile), "pricing-cache.json")
@@ -586,18 +592,18 @@ func (a *App) RefreshAll() RefreshSummary {
 
 // RefreshSummary 积分刷新汇总（托盘消息框内容）。
 type RefreshSummary struct {
-	Busy      bool                        `json:"busy"`
-	Total     int                         `json:"total"`
-	OK        int                         `json:"ok"`
-	Failed    int                         `json:"failed"`
-	Platforms map[string]PlatformSummary  `json:"platforms"`
+	Busy      bool                       `json:"busy"`
+	Total     int                        `json:"total"`
+	OK        int                        `json:"ok"`
+	Failed    int                        `json:"failed"`
+	Platforms map[string]PlatformSummary `json:"platforms"`
 }
 
 // PlatformSummary 单个渠道汇总。
 type PlatformSummary struct {
-	OK       int               `json:"ok"`
-	Failed   int               `json:"failed"`
-	Accounts []AccountRefresh  `json:"accounts"`
+	OK       int              `json:"ok"`
+	Failed   int              `json:"failed"`
+	Accounts []AccountRefresh `json:"accounts"`
 }
 
 // AccountRefresh 单账号刷新结果。
@@ -880,12 +886,13 @@ func apiError(w http.ResponseWriter, status int, msg string) {
 }
 
 // HandleAPI 注册管理 API 路由（挂到 server handler 的 /api/* 上）。
-// 无鉴权（个人单机工具），监听 0.0.0.0 时风险由用户承担。
+// admin_password 非空时，除 session/login/logout 外全部要求会话 Cookie + CSRF。
 func (a *App) HandleAPI(mux *http.ServeMux) {
-	mux.HandleFunc("GET /api/state", func(w http.ResponseWriter, r *http.Request) {
+	inner := http.NewServeMux()
+	inner.HandleFunc("GET /api/state", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, a.GetState())
 	})
-	mux.HandleFunc("POST /api/login/start", func(w http.ResponseWriter, r *http.Request) {
+	inner.HandleFunc("POST /api/login/start", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Channel string `json:"channel"`
 		}
@@ -897,14 +904,14 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"auth_url": url})
 	})
-	mux.HandleFunc("POST /api/login/cancel", func(w http.ResponseWriter, r *http.Request) {
+	inner.HandleFunc("POST /api/login/cancel", func(w http.ResponseWriter, r *http.Request) {
 		if err := a.CancelLogin(); err != nil {
 			apiError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	})
-	mux.HandleFunc("POST /api/account/checkin", func(w http.ResponseWriter, r *http.Request) {
+	inner.HandleFunc("POST /api/account/checkin", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			UID string `json:"uid"`
 		}
@@ -916,11 +923,11 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 		}
 		writeJSON(w, http.StatusOK, res)
 	})
-	mux.HandleFunc("POST /api/account/checkin_all", func(w http.ResponseWriter, r *http.Request) {
+	inner.HandleFunc("POST /api/account/checkin_all", func(w http.ResponseWriter, r *http.Request) {
 		results := a.CheckinAll()
 		writeJSON(w, http.StatusOK, map[string]any{"results": results})
 	})
-	mux.HandleFunc("POST /api/account/refresh", func(w http.ResponseWriter, r *http.Request) {
+	inner.HandleFunc("POST /api/account/refresh", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			UID string `json:"uid"`
 		}
@@ -932,10 +939,10 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"remain": remain})
 	})
-	mux.HandleFunc("POST /api/account/refresh_all", func(w http.ResponseWriter, r *http.Request) {
+	inner.HandleFunc("POST /api/account/refresh_all", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, a.RefreshAll())
 	})
-	mux.HandleFunc("POST /api/account/remove", func(w http.ResponseWriter, r *http.Request) {
+	inner.HandleFunc("POST /api/account/remove", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			UID string `json:"uid"`
 		}
@@ -947,7 +954,7 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	})
 	// 导入 WorkBuddy 桌面端导出的凭证 JSON（auth.Parse 兼容嵌套/扁平）。
-	mux.HandleFunc("POST /api/account/import", func(w http.ResponseWriter, r *http.Request) {
+	inner.HandleFunc("POST /api/account/import", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Raw string `json:"raw"`
 		}
@@ -1001,7 +1008,7 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 		log.Printf("imported account uid=%s nickname=%s file=%s", au.UID, au.Nickname, filepath.Base(fp))
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "uid": au.UID, "nickname": au.Nickname})
 	})
-	mux.HandleFunc("POST /api/account/disable", func(w http.ResponseWriter, r *http.Request) {
+	inner.HandleFunc("POST /api/account/disable", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			UID      string `json:"uid"`
 			Disabled bool   `json:"disabled"`
@@ -1013,7 +1020,7 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	})
-	mux.HandleFunc("POST /api/account/resource_detail", func(w http.ResponseWriter, r *http.Request) {
+	inner.HandleFunc("POST /api/account/resource_detail", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			UID string `json:"uid"`
 		}
@@ -1025,7 +1032,7 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"remain": remain, "items": items})
 	})
-	mux.HandleFunc("POST /api/config/checkin_times", func(w http.ResponseWriter, r *http.Request) {
+	inner.HandleFunc("POST /api/config/checkin_times", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Times []string `json:"times"`
 		}
@@ -1036,7 +1043,7 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	})
-	mux.HandleFunc("POST /api/config/listen", func(w http.ResponseWriter, r *http.Request) {
+	inner.HandleFunc("POST /api/config/listen", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Host string `json:"host"`
 			Port int    `json:"port"`
@@ -1048,7 +1055,7 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	})
-	mux.HandleFunc("POST /api/config/api_key", func(w http.ResponseWriter, r *http.Request) {
+	inner.HandleFunc("POST /api/config/api_key", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Key string `json:"key"`
 		}
@@ -1059,7 +1066,7 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	})
-	mux.HandleFunc("POST /api/config/autostart", func(w http.ResponseWriter, r *http.Request) {
+	inner.HandleFunc("POST /api/config/autostart", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			On bool `json:"on"`
 		}
@@ -1070,14 +1077,14 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	})
-	mux.HandleFunc("GET /api/fees", func(w http.ResponseWriter, r *http.Request) {
+	inner.HandleFunc("GET /api/fees", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, a.FeesInfo())
 	})
-	mux.HandleFunc("POST /api/fees/refresh", func(w http.ResponseWriter, r *http.Request) {
+	inner.HandleFunc("POST /api/fees/refresh", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, a.FeesInfo())
 		go a.safeGo(func() { a.RefreshPricing() })
 	})
-	mux.HandleFunc("GET /api/logs", func(w http.ResponseWriter, r *http.Request) {
+	inner.HandleFunc("GET /api/logs", func(w http.ResponseWriter, r *http.Request) {
 		fp := filepath.Join(filepath.Dir(a.cfg.StateFile), "app.log")
 		raw, _ := os.ReadFile(fp)
 		lines := strings.Split(string(raw), "\n")
@@ -1086,10 +1093,155 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"lines": lines})
 	})
-	mux.HandleFunc("POST /api/quit", func(w http.ResponseWriter, r *http.Request) {
+	inner.HandleFunc("POST /api/quit", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 		go a.safeGo(func() { a.Quit() })
 	})
+
+	// 受保护路由挂载：/api/ 前缀整体经会话鉴权（更具体的 session/login/logout 优先匹配）
+	mux.Handle("/api/", a.requireSession(inner.ServeHTTP))
+
+	// 开放路由：会话查询 / 登录 / 登出
+	mux.HandleFunc("GET /api/session", func(w http.ResponseWriter, r *http.Request) {
+		if !a.authEnabled() {
+			writeJSON(w, http.StatusOK, map[string]any{"authenticated": true, "csrf_token": "panel-auth-disabled"})
+			return
+		}
+		if s := a.lookupSession(r); s != nil {
+			writeJSON(w, http.StatusOK, map[string]any{"authenticated": true, "csrf_token": s.CSRF})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"authenticated": false})
+	})
+	mux.HandleFunc("POST /api/login", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Password string `json:"password"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if !a.authEnabled() {
+			writeJSON(w, http.StatusOK, map[string]any{"success": true})
+			return
+		}
+		if subtle.ConstantTimeCompare([]byte(req.Password), []byte(a.cfg.AdminPassword)) != 1 {
+			apiError(w, http.StatusUnauthorized, "密码错误")
+			return
+		}
+		token, err := randToken(32)
+		if err != nil {
+			apiError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		csrf, err := randToken(32)
+		if err != nil {
+			apiError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		a.sessMu.Lock()
+		if a.sessions == nil {
+			a.sessions = make(map[string]*adminSession)
+		}
+		// 顺带清理过期会话
+		now := time.Now()
+		for k, v := range a.sessions {
+			if now.After(v.Expires) {
+				delete(a.sessions, k)
+			}
+		}
+		a.sessions[token] = &adminSession{CSRF: csrf, Expires: now.Add(sessionTTL)}
+		a.sessMu.Unlock()
+		http.SetCookie(w, &http.Cookie{
+			Name:     sessionCookieName,
+			Value:    token,
+			Path:     "/",
+			HttpOnly: true,
+			SameSite: http.SameSiteLaxMode,
+			MaxAge:   int(sessionTTL.Seconds()),
+			Secure:   r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https",
+		})
+		log.Printf("panel login ok remote=%s", r.RemoteAddr)
+		writeJSON(w, http.StatusOK, map[string]any{"success": true, "csrf_token": csrf})
+	})
+	mux.HandleFunc("POST /api/logout", func(w http.ResponseWriter, r *http.Request) {
+		if c, err := r.Cookie(sessionCookieName); err == nil {
+			a.sessMu.Lock()
+			delete(a.sessions, c.Value)
+			a.sessMu.Unlock()
+		}
+		http.SetCookie(w, &http.Cookie{
+			Name:     sessionCookieName,
+			Value:    "",
+			Path:     "/",
+			HttpOnly: true,
+			SameSite: http.SameSiteLaxMode,
+			MaxAge:   -1,
+		})
+		writeJSON(w, http.StatusOK, map[string]any{"success": true})
+	})
+}
+
+// ---------------------------------------------------------------------------
+// 面板会话鉴权
+// ---------------------------------------------------------------------------
+
+const (
+	sessionCookieName = "ww2a_session"
+	sessionTTL        = 7 * 24 * time.Hour
+)
+
+// adminSession 一次面板登录会话。
+type adminSession struct {
+	CSRF    string
+	Expires time.Time
+}
+
+// authEnabled 面板鉴权是否启用（admin_password 非空）。
+func (a *App) authEnabled() bool {
+	return a.cfg.AdminPassword != ""
+}
+
+// lookupSession 从 Cookie 恢复有效会话，无/过期返回 nil。
+func (a *App) lookupSession(r *http.Request) *adminSession {
+	if !a.authEnabled() {
+		return &adminSession{CSRF: ""} // 未启用鉴权：视为已登录（无 CSRF 要求）
+	}
+	c, err := r.Cookie(sessionCookieName)
+	if err != nil || c.Value == "" {
+		return nil
+	}
+	a.sessMu.Lock()
+	defer a.sessMu.Unlock()
+	s, ok := a.sessions[c.Value]
+	if !ok || time.Now().After(s.Expires) {
+		return nil
+	}
+	return s
+}
+
+// requireSession 管理 API 中间件：会话校验 + 非 GET 请求 CSRF 校验。
+func (a *App) requireSession(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		s := a.lookupSession(r)
+		if s == nil {
+			apiError(w, http.StatusUnauthorized, "未登录或会话已过期")
+			return
+		}
+		if a.authEnabled() && r.Method != http.MethodGet {
+			if r.Header.Get("X-CSRF-Token") != s.CSRF {
+				apiError(w, http.StatusForbidden, "CSRF 校验失败")
+				return
+			}
+		}
+		next(w, r)
+	}
+}
+
+// randToken 生成 n 字节随机 hex 串。
+func randToken(n int) (string, error) {
+	buf := make([]byte, n)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(buf), nil
 }
 
 // ---------------------------------------------------------------------------

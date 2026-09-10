@@ -60,24 +60,15 @@ go build -o wild-work ./cmd/wild-work && ./wild-work        # 系统托盘常驻
 - **OAuth 登录**：选择渠道 → 浏览器打开授权页 → 登录 → 面板自动完成导入（签到、入池）
 - **JSON 导入**：粘贴 WorkBuddy 桌面端导出的凭证 JSON（`workbuddy-desktop-*.json` 全文），自动换算过期时间并落盘
 
-> [!IMPORTANT]
-> 控制台的 `/api/*` 管理接口**无内置鉴权**（上游 wild-work 的单机设计）。公网部署时务必置于反代之后并对面板路径加访问控制（如 Caddy `basic_auth` / nginx basic auth），仅放行 `/v1/*`、`/healthz` 等走 Bearer key 的端点。
+> [!NOTE]
+> 面板登录：在 `config.json` 中设置 `admin_password` 后，控制台与 `/api/*` 管理接口由内置会话鉴权保护（密码登录 → HttpOnly Cookie + CSRF 校验，7 天有效）。**留空 = 面板不鉴权**，仅适合本机桌面模式；公网部署务必设置。
 
-### 反代示例（Caddy）
+### 反代示例（Caddy，SSE 流式必需 flush）
 
 ```caddyfile
 api.example.com {
-    @api path /v1/* /healthz /status
-    handle @api {
-        reverse_proxy 127.0.0.1:7863 {
-            flush_interval -1    # SSE 流式必需
-        }
-    }
-    handle {
-        basic_auth {
-            admin <bcrypt-hash>  # caddy hash-password 生成
-        }
-        reverse_proxy 127.0.0.1:7863
+    reverse_proxy 127.0.0.1:7863 {
+        flush_interval -1
     }
 }
 ```
@@ -117,6 +108,7 @@ curl http://localhost:7863/v1/models -H "Authorization: Bearer your-api-key"
 |---|---|---|
 | `listen.host` / `port` | `127.0.0.1` / `7863` | HTTP 监听（容器内需 `0.0.0.0`） |
 | `api_key` | — | 网关鉴权密钥；面板中可运行时修改 |
+| `admin_password` | — | 面板登录密码；空 = 面板不鉴权（仅本机使用） |
 | `auth_dir` | `./auths` | 账号凭证目录（明文，注意权限） |
 | `state_file` | `./data/state.json` | 账号池状态持久化 |
 | `cooldown.*` | 见样例 | 硬冷却（余额耗尽）/ 软冷却（频控）/ 连续错误阈值与退避 |

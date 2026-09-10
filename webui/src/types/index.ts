@@ -2,6 +2,21 @@ export interface ApiError {
   error?: string
 }
 
+export interface SessionInfo {
+  authenticated: boolean
+  csrf_token?: string
+}
+
+export interface LoginResult {
+  success: boolean
+  error?: string
+  csrf_token?: string
+}
+
+export interface LogoutResult {
+  success: boolean
+}
+
 export type Channel = "workbuddy" | "traework" | "qoder"
 
 export interface AccountView {
