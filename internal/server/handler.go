@@ -99,6 +99,7 @@ func NewHandler(cfg Config) *Handler {
 	}
 	h := &Handler{cfg: cfg, mux: http.NewServeMux(), sticky: make(map[string]*stickyEntry)}
 	h.mux.HandleFunc("POST /v1/chat/completions", h.withAuth(h.chatCompletions))
+	h.mux.HandleFunc("POST /v1/responses", h.withAuth(h.responses))
 	h.mux.HandleFunc("GET /v1/models", h.withAuth(h.models))
 	h.mux.HandleFunc("GET /status", h.withAuth(h.status))
 	h.mux.HandleFunc("GET /healthz", h.healthz)
@@ -120,6 +121,7 @@ func (h *Handler) stickyKey(kind provider.Kind) string { return kind.String() }
 // 优先使用上次成功路由的账号，直到：
 //   - 账号进入冷却/禁用状态
 //   - 连续成功请求达到 maxReqs 次（默认 50），自动轮换
+//
 // 任一条件触发则降级为 Pick() 选新账号并重置粘性记录。
 func (h *Handler) pickWithSticky(rt *Runtime) *auth.Auth {
 	const defaultMaxReqs = 50
@@ -340,6 +342,26 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	rc, ok := h.dispatchChat(rt, body, w)
+	if !ok {
+		return
+	}
+	defer rc.Close()
+	if peek.Stream {
+		_ = rt.Upstream.Stream(w, rc)
+		return
+	}
+	resp, err := rt.Upstream.Aggregate(rc)
+	if err != nil {
+		writeOpenAIError(w, http.StatusBadGateway, "upstream_parse", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// dispatchChat 选号（粘性/刷新/换号重试）并打开上游流。
+// 失败路径自行把错误响应写入 w 并返回 ok=false；成功返回需调用方 Close 的 rc。
+func (h *Handler) dispatchChat(rt *Runtime, body []byte, w http.ResponseWriter) (io.ReadCloser, bool) {
 	tried := map[string]bool{}
 	var lastErr error
 	for i := 0; i < h.cfg.MaxRotate; i++ {
@@ -401,28 +423,18 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(status)
 			_, _ = w.Write(respBody)
-			return
+			return nil, false
 		}
-		defer rc.Close()
 		rt.Pool.NoteSuccess(acct.UID)
 		h.stickySuccess(rt)
-		if peek.Stream {
-			_ = rt.Upstream.Stream(w, rc)
-			return
-		}
-		resp, err := rt.Upstream.Aggregate(rc)
-		if err != nil {
-			writeOpenAIError(w, http.StatusBadGateway, "upstream_parse", err.Error())
-			return
-		}
-		writeJSON(w, http.StatusOK, resp)
-		return
+		return rc, true
 	}
 	msg := "all accounts unavailable (cooling/disabled)"
 	if lastErr != nil {
 		msg += ": " + lastErr.Error()
 	}
 	writeOpenAIError(w, http.StatusServiceUnavailable, "no_healthy_account", msg)
+	return nil, false
 }
 
 func (h *Handler) runtimeForModel(model string) (*Runtime, string, error) {
