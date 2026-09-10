@@ -353,6 +353,14 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		Stream bool   `json:"stream"`
 	}
 	_ = json.Unmarshal(body, &peek)
+	// @think 后缀：推理内容包装为 <think>…</think> 正文标签输出。
+	// 面向只从正文标签提取思考的客户端（ZCode OpenAI 兼容模式等），
+	// 标签形态可穿透任意中转站。例：kimi-k3-1@think / workbuddy/glm-5.3@think。
+	requestedModel := peek.Model
+	thinkTag := strings.HasSuffix(peek.Model, "@think")
+	if thinkTag {
+		peek.Model = strings.TrimSuffix(peek.Model, "@think")
+	}
 	rt, model, err := h.runtimeForModel(peek.Model)
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_model", err.Error())
@@ -372,8 +380,17 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	fbw := newFirstByteWriter(w, t0)
 	if peek.Stream {
 		tee := &usageTee{}
-		err := rt.Upstream.Stream(fbw, &teeReadCloser{rc: rc, w: tee})
-		h.finishReqLog(t0, peek.Model, rt.Kind.String(), uid, http.StatusOK, true, fbw.ttfb(), tee.snapshot())
+		var out http.ResponseWriter = fbw
+		var ttw *thinkTagWriter
+		if thinkTag {
+			ttw = newThinkTagWriter(fbw)
+			out = ttw
+		}
+		err := rt.Upstream.Stream(out, &teeReadCloser{rc: rc, w: tee})
+		if ttw != nil {
+			ttw.Finish()
+		}
+		h.finishReqLog(t0, requestedModel, rt.Kind.String(), uid, http.StatusOK, true, fbw.ttfb(), tee.snapshot())
 		_ = err
 		return
 	}
@@ -382,9 +399,35 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		writeOpenAIError(fbw, http.StatusBadGateway, "upstream_parse", err.Error())
 		return
 	}
+	if thinkTag {
+		wrapThinkTag(resp)
+	}
 	usage, _ := resp["usage"].(map[string]any)
-	h.finishReqLog(t0, peek.Model, rt.Kind.String(), uid, http.StatusOK, false, 0, usage)
+	h.finishReqLog(t0, requestedModel, rt.Kind.String(), uid, http.StatusOK, false, 0, usage)
 	writeJSON(fbw, http.StatusOK, resp)
+}
+
+// wrapThinkTag 非流式：把 message 的推理内容并入正文 <think> 标签，删除推理字段。
+func wrapThinkTag(resp map[string]any) {
+	choices, _ := resp["choices"].([]any)
+	for _, ci := range choices {
+		c, ok := ci.(map[string]any)
+		if !ok {
+			continue
+		}
+		msg, _ := c["message"].(map[string]any)
+		if msg == nil {
+			continue
+		}
+		reasoning, _ := msg["reasoning_content"].(string)
+		if reasoning == "" {
+			return
+		}
+		content, _ := msg["content"].(string)
+		msg["content"] = "<think>" + reasoning + "</think>\n" + content
+		delete(msg, "reasoning_content")
+		delete(msg, "reasoning")
+	}
 }
 
 // dispatchChat 选号（粘性/刷新/换号重试）并打开上游流。
