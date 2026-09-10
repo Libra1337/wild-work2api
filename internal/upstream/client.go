@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"wild-work/internal/auth"
@@ -92,6 +93,34 @@ type Client struct {
 	BillingBaseCN   string
 	ChatBaseGlobal  string
 	BillingBaseGlob string
+
+	// SanitizeFingerprints 开启后出站消息内容做指纹脱敏（sanitize.go）。
+	SanitizeFingerprints bool
+
+	// effortsMu/efforts 缓存各模型 supportedEfforts（FetchModels 刷新），供请求体 effort 降级。
+	effortsMu sync.RWMutex
+	efforts   map[string][]string
+}
+
+// effortsSnapshot 返回 effort 能力缓存副本；nil 表示未知（透传不降级）。
+func (c *Client) effortsSnapshot() map[string][]string {
+	c.effortsMu.RLock()
+	defer c.effortsMu.RUnlock()
+	if len(c.efforts) == 0 {
+		return nil
+	}
+	out := make(map[string][]string, len(c.efforts))
+	for k, v := range c.efforts {
+		out[k] = v
+	}
+	return out
+}
+
+// setEfforts 刷新 effort 能力缓存（FetchModels 调用）。
+func (c *Client) setEfforts(m map[string][]string) {
+	c.effortsMu.Lock()
+	c.efforts = m
+	c.effortsMu.Unlock()
 }
 
 // New 生产默认值。配置连接池减少 TLS 握手。
@@ -222,7 +251,7 @@ func (c *Client) RefreshToken(a *auth.Auth) error {
 // 只有传输层失败才返回 err。
 func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status int, respBody []byte, err error) {
 	url := c.chatBase(a) + "/v2/chat/completions"
-	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(PrepareBody(body)))
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(PrepareBodyOptWithEfforts(body, c.SanitizeFingerprints, c.effortsSnapshot())))
 	if err != nil {
 		return nil, 0, nil, err
 	}
@@ -278,6 +307,10 @@ func (c *Client) FetchModels(a *auth.Auth) ([]ModelInfo, error) {
 				MaxInputTokens  int64  `json:"maxInputTokens"`
 				MaxOutputTokens int64  `json:"maxOutputTokens"`
 				Disabled        bool   `json:"disabled"`
+				Reasoning       struct {
+					Effort           string   `json:"effort"`
+					SupportedEfforts []string `json:"supportedEfforts"`
+				} `json:"reasoning"`
 			} `json:"models"`
 			Agents []struct {
 				Name   string   `json:"name"`
@@ -302,22 +335,25 @@ func (c *Client) FetchModels(a *auth.Auth) ([]ModelInfo, error) {
 		return nil, fmt.Errorf("no cli agent models found")
 	}
 	dynMap := make(map[string]struct {
-		ID              string
-		Name            string
-		MaxInputTokens  int64
-		MaxOutputTokens int64
-		Disabled        bool
+		ID               string
+		Name             string
+		MaxInputTokens   int64
+		MaxOutputTokens  int64
+		Disabled         bool
+		SupportedEfforts []string
 	}, len(env.Data.Models))
 	for _, m := range env.Data.Models {
 		dynMap[m.ID] = struct {
-			ID              string
-			Name            string
-			MaxInputTokens  int64
-			MaxOutputTokens int64
-			Disabled        bool
-		}{m.ID, m.Name, m.MaxInputTokens, m.MaxOutputTokens, m.Disabled}
+			ID               string
+			Name             string
+			MaxInputTokens   int64
+			MaxOutputTokens  int64
+			Disabled         bool
+			SupportedEfforts []string
+		}{m.ID, m.Name, m.MaxInputTokens, m.MaxOutputTokens, m.Disabled, m.Reasoning.SupportedEfforts}
 	}
 	out := make([]ModelInfo, 0, len(cliIDs))
+	efforts := make(map[string][]string, len(cliIDs))
 	for _, id := range cliIDs {
 		m, ok := dynMap[id]
 		if !ok || m.Disabled {
@@ -329,10 +365,15 @@ func (c *Client) FetchModels(a *auth.Auth) ([]ModelInfo, error) {
 			ContextWindow: m.MaxInputTokens,
 			MaxTokens:     m.MaxOutputTokens,
 		})
+		if len(m.SupportedEfforts) > 0 {
+			efforts[m.ID] = m.SupportedEfforts
+		}
 	}
 	if len(out) == 0 {
 		return nil, fmt.Errorf("models api returned empty list")
 	}
+	// 刷新 effort 能力缓存（供请求体降级；无 supportedEfforts 的模型不入缓存）。
+	c.setEfforts(efforts)
 	return out, nil
 }
 
@@ -446,7 +487,9 @@ func (c *Client) UserResourceDetail(a *auth.Auth) (int64, []provider.ResourceIte
 		default:
 			total_, used, remain = acct.CapacitySize, acct.CapacityUsed, acct.CapacityRemain
 		}
-		if remain < 0 { remain = 0 }
+		if remain < 0 {
+			remain = 0
+		}
 		total += remain
 		items = append(items, provider.ResourceItem{
 			Name:   acct.PackageName,
@@ -513,9 +556,9 @@ func (c *Client) FetchModelPricing(a *auth.Auth) ([]provider.ModelPricing, error
 		Code int `json:"code"`
 		Data struct {
 			Models []struct {
-				ID      string `json:"id"`
-				Name    string `json:"name"`
-				Credits string `json:"credits"` // "x0.79 credits"
+				ID      string   `json:"id"`
+				Name    string   `json:"name"`
+				Credits string   `json:"credits"` // "x0.79 credits"
 				Tags    []string `json:"tags"`
 			} `json:"models"`
 		} `json:"data"`

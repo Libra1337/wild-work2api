@@ -107,6 +107,7 @@ func main() {
 
 	wbUp := upstream.New()
 	wbUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
+	wbUp.SanitizeFingerprints = cfg.Features.SanitizeBlacklistFingerprints
 	trUp := traework.New()
 	trUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
 	qdUp := qoder.New()

@@ -1,15 +1,31 @@
 // payload.go 改写发往上游的 chat 请求体：
 //  1. 强制 stream:true（上游拒绝非流式）
 //  2. tool_choice 归一化（上游该字段是 string，对象形式会 400 code=11101）
+//  3. developer 角色归一为 system（上游 role 白名单，命中即 400 code=11128）
+//  4. reasoning_effort 按模型 supportedEfforts 降级
+//  5. 可选：消息内容指纹脱敏（sanitize.go）
 package upstream
 
 import (
 	"encoding/json"
+	"log"
 	"strings"
 )
 
-// PrepareBody 单 pass 改写；无法解析时原样返回。
+// PrepareBody 兼容旧调用：不脱敏、不降级。
 func PrepareBody(src []byte) []byte {
+	return PrepareBodyOpt(src, false)
+}
+
+// PrepareBodyOpt 单 pass 改写；sanitize=false 时行为还原（仅强制 stream + 归一化）。
+func PrepareBodyOpt(src []byte, sanitize bool) []byte {
+	return PrepareBodyOptWithEfforts(src, sanitize, nil)
+}
+
+// PrepareBodyOptWithEfforts 在 PrepareBodyOpt 基础上按模型 supportedEfforts 降级 reasoning_effort：
+// 仅当请求显式携带且模型不支持该档位时，改为 ≤请求档位的最高支持档；支持档全部高于请求档时取最低档；
+// 未知模型/未知档位/未携带该字段一律透传。efforts 为 nil 表示未知（不降级）。
+func PrepareBodyOptWithEfforts(src []byte, sanitize bool, efforts map[string][]string) []byte {
 	if len(src) == 0 {
 		return src
 	}
@@ -19,7 +35,13 @@ func PrepareBody(src []byte) []byte {
 	}
 	obj["stream"] = true
 	normalizeToolChoice(obj)
-	normalizeRoles(obj) // developer → system（上游对 developer 角色触发内容过滤误杀）
+	normalizeRoles(obj)
+	normalizeReasoningEffort(obj, efforts)
+	if sanitize {
+		if msgs, ok := obj["messages"].([]any); ok {
+			sanitizeMessages(msgs)
+		}
+	}
 	out, err := json.Marshal(obj)
 	if err != nil {
 		return src
@@ -27,21 +49,99 @@ func PrepareBody(src []byte) []byte {
 	return out
 }
 
-// normalizeRoles 将 OpenAI 的 developer 角色改写为 system。
-// 上游对 role=developer 的消息一律命中内容过滤（finish_reason=content_filter，
-// 返回“检测到敏感内容”），而相同内容用 system 角色则完全正常。
+// effortRank 档位从低到高。
+var effortRank = map[string]int{"off": 0, "minimal": 1, "low": 2, "medium": 3, "high": 4, "xhigh": 5, "max": 6}
+
+// normalizeReasoningEffort 按模型 supportedEfforts 降级 reasoning_effort（snake/camel 双字段兼容）。
+//   - 请求档位模型支持 → 原样透传
+//   - 请求档位不支持 → 改为 ≤请求档位的最高支持档（降级）
+//   - 支持档全部高于请求档 → 取最低支持档（偏离最小）
+//   - 未知模型/未知档位/未携带字段/模型未缓存 → 一律透传
+func normalizeReasoningEffort(obj map[string]any, efforts map[string][]string) {
+	if len(efforts) == 0 {
+		return
+	}
+	model, _ := obj["model"].(string)
+	if model == "" {
+		return
+	}
+	supported, ok := efforts[model]
+	if !ok || len(supported) == 0 {
+		return
+	}
+	key := ""
+	if _, present := obj["reasoning_effort"]; present {
+		key = "reasoning_effort"
+	} else if _, present := obj["reasoningEffort"]; present {
+		key = "reasoningEffort"
+	} else {
+		return
+	}
+	reqStr, ok := obj[key].(string)
+	if !ok {
+		return
+	}
+	reqStr = strings.TrimSpace(strings.ToLower(reqStr))
+	reqIdx, known := effortRank[reqStr]
+	if !known {
+		return
+	}
+	// 在 ≤请求档位的支持档里选最高档；命中且与请求不同才改写。
+	best, bestIdx := "", -1
+	for _, s := range supported {
+		idx, k := effortRank[strings.TrimSpace(strings.ToLower(s))]
+		if k && idx <= reqIdx && idx > bestIdx {
+			best, bestIdx = s, idx
+		}
+	}
+	if best != "" {
+		if !strings.EqualFold(best, reqStr) {
+			obj[key] = best
+			log.Printf("reasoning_effort downgraded model=%s %s -> %s", model, reqStr, best)
+		}
+		return
+	}
+	// 支持档全部高于请求档：取最低支持档。
+	lowest, lowestIdx := "", 1<<30
+	for _, s := range supported {
+		idx, k := effortRank[strings.TrimSpace(strings.ToLower(s))]
+		if k && idx < lowestIdx {
+			lowest, lowestIdx = s, idx
+		}
+	}
+	if lowest != "" {
+		obj[key] = lowest
+		log.Printf("reasoning_effort floored model=%s %s -> %s", model, reqStr, lowest)
+	}
+}
+
+// normalizeRoles 把 messages 里的 developer 角色归一为 system。
+//
+// 背景：上游对 messages 的 role 字段做白名单校验，developer 不在白名单内，
+// 命中即 HTTP 400 code=11128（实测当前为精确小写匹配；用 EqualFold+TrimSpace
+// 容错匹配，防上游后续收紧大小写/空白变体）。developer 是 OpenAI 新规范里
+// system 的别名（Codex / Cursor 等新客户端用它承载 system 级指令），
+// 改写为 system 不丢语义。
+//
+// 只认 developer 这一个值：其余 role（system/user/assistant/tool/任意未知值）一律原样保留，
+// 不合并、不重排、不删除任何消息。
 func normalizeRoles(obj map[string]any) {
 	msgs, ok := obj["messages"].([]any)
 	if !ok {
 		return
 	}
-	for _, m := range msgs {
-		mm, ok := m.(map[string]any)
+	for i, m := range msgs {
+		msg, ok := m.(map[string]any)
 		if !ok {
 			continue
 		}
-		if r, _ := mm["role"].(string); r == "developer" {
-			mm["role"] = "system"
+		role, ok := msg["role"].(string)
+		if !ok {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(role), "developer") {
+			msg["role"] = "system"
+			log.Printf("role normalized developer->system idx=%d", i)
 		}
 	}
 }

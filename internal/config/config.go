@@ -112,6 +112,11 @@ type Config struct {
 		TimeoutSeconds int `json:"timeout_seconds"` // 默认 120
 	} `json:"upstream"`
 
+	Features struct {
+		// SanitizeBlacklistFingerprints 出站消息内容指纹脱敏（默认开启）
+		SanitizeBlacklistFingerprints bool `json:"sanitize_blacklist_fingerprints"`
+	} `json:"features"`
+
 	// 解析后
 	HardCreditDur  time.Duration `json:"-"`
 	SoftRateDur    time.Duration `json:"-"`
@@ -135,6 +140,7 @@ func Default() *Config {
 	c.Schedule.CheckinTimes = []string{"09:00", "21:00"}
 	c.Schedule.KeepaliveHours = []int{22}
 	c.Upstream.TimeoutSeconds = 120
+	c.Features.SanitizeBlacklistFingerprints = true
 	return c
 }
 
