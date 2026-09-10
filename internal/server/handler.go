@@ -3,6 +3,7 @@ package server
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -442,9 +443,11 @@ func (h *Handler) dispatchChat(rt *Runtime, body []byte, w http.ResponseWriter) 
 		// 卡流检测：流打开后 firstContentTimeout 内未出现首个内容块
 		// （content/reasoning_content/tool_calls），视为该账号/模型卡死，
 		// 关流换号重试，避免把死流耗到客户端超时。
+		// 探测阶段消费的字节（含携带 tool_call id/name 的首片）必须回放。
 		brc := &bufferedStream{br: bufio.NewReaderSize(rc, 64*1024), rc: rc}
+		var sink bytes.Buffer
 		progress := make(chan error, 1)
-		go func() { progress <- waitFirstContent(brc.br) }()
+		go func() { progress <- waitFirstContent(brc.br, &sink) }()
 		select {
 		case perr := <-progress:
 			if perr != nil && perr != io.EOF {
@@ -462,6 +465,7 @@ func (h *Handler) dispatchChat(rt *Runtime, body []byte, w http.ResponseWriter) 
 			_ = rc.Close()
 			continue
 		}
+		brc.prefix = sink.Bytes()
 		rt.Pool.NoteSuccess(acct.UID)
 		h.stickySuccess(rt)
 		return brc, acct.UID, true

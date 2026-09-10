@@ -3,6 +3,7 @@ package server
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
@@ -15,12 +16,17 @@ import (
 const firstContentTimeout = 15 * time.Second
 
 // waitFirstContent 逐行读取 SSE，直到出现首个「有实质内容」的块或流终止。
+// 所有已消费的字节写入 sink，供上层回放——首个内容行往往携带
+// tool_calls 的 id/type/name，丢弃会导致下游无法解析工具调用。
 // 返回 nil 表示见到内容块（或 [DONE]/EOF 空流，交由上层正常处理）；
 // 返回非 EOF 错误表示传输故障。
-func waitFirstContent(br *bufio.Reader) error {
+func waitFirstContent(br *bufio.Reader, sink *bytes.Buffer) error {
 	for {
 		line, err := br.ReadString('\n')
 		if line != "" {
+			if sink != nil && sink.Len() < 1<<20 {
+				_, _ = sink.WriteString(line)
+			}
 			if len(line) > 5 && line[:5] == "data:" {
 				payload := line[5:]
 				if len(payload) > 0 && payload[0] == ' ' {
@@ -65,12 +71,20 @@ func contentChunk(payload string) bool {
 	return d.Content != "" || d.Reasoning != "" || len(d.ToolCalls) > 0
 }
 
-// bufferedStream 保留卡流检测阶段预读的字节，向调用方透明回放。
+// bufferedStream 保留卡流检测阶段预读的字节（prefix），向调用方透明回放。
 type bufferedStream struct {
-	br *bufio.Reader
-	rc io.ReadCloser
+	br     *bufio.Reader
+	rc     io.ReadCloser
+	prefix []byte
 }
 
-func (b *bufferedStream) Read(p []byte) (int, error) { return b.br.Read(p) }
+func (b *bufferedStream) Read(p []byte) (int, error) {
+	if len(b.prefix) > 0 {
+		n := copy(p, b.prefix)
+		b.prefix = b.prefix[n:]
+		return n, nil
+	}
+	return b.br.Read(p)
+}
 
 func (b *bufferedStream) Close() error { return b.rc.Close() }
