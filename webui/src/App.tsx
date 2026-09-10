@@ -1,24 +1,32 @@
-import { HashRouter, Route, Routes } from "react-router-dom";
-import { Toaster } from "sonner";
-import { AppLayout } from "./components/layout/AppLayout";
-import DashboardPage from "./pages/DashboardPage";
-import FeesPage from "./pages/FeesPage";
-import LogsPage from "./pages/LogsPage";
-import SettingsPage from "./pages/SettingsPage";
+import { HashRouter, Navigate, Route, Routes } from "react-router-dom"
+import AppLayout from "@/components/layout/AppLayout"
+import DashboardPage from "@/pages/DashboardPage"
+import AccountsPage from "@/pages/AccountsPage"
+import ApiPage from "@/pages/ApiPage"
+import LogsPage from "@/pages/LogsPage"
+
+function NotFoundPage() {
+  return (
+    <div className="flex h-screen flex-col items-center justify-center gap-6">
+      <div className="text-7xl font-bold text-muted-foreground/30">404</div>
+      <p className="text-lg text-muted-foreground">页面不存在</p>
+    </div>
+  )
+}
 
 export default function App() {
   return (
     <HashRouter>
-      <AppLayout>
-        <Routes>
-          <Route path="/" element={<DashboardPage />} />
-          <Route path="/fees" element={<FeesPage />} />
-          <Route path="/logs" element={<LogsPage />} />
-          <Route path="/settings" element={<SettingsPage />} />
-          <Route path="*" element={<DashboardPage />} />
-        </Routes>
-      </AppLayout>
-      <Toaster position="top-center" richColors />
+      <Routes>
+        <Route path="/admin" element={<AppLayout />}>
+          <Route index element={<Navigate to="/admin/dashboard" replace />} />
+          <Route path="dashboard" element={<DashboardPage />} />
+          <Route path="token" element={<AccountsPage />} />
+          <Route path="keys" element={<ApiPage />} />
+          <Route path="logs" element={<LogsPage />} />
+        </Route>
+        <Route path="*" element={<NotFoundPage />} />
+      </Routes>
     </HashRouter>
-  );
+  )
 }

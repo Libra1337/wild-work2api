@@ -1,41 +1,37 @@
-import * as React from "react";
-import { Check, Copy } from "lucide-react";
-import { toast } from "sonner";
-import { Button } from "../ui/button";
+import { useState, useCallback } from "react"
+import { Copy, Check } from "lucide-react"
+import { Button } from "@/components/ui/button"
 
 interface CopyButtonProps {
-  value: string;
-  label?: string;
+  text: string
+  className?: string
 }
 
-export function CopyButton({ value, label }: CopyButtonProps) {
-  const [copied, setCopied] = React.useState(false);
+export function CopyButton({ text, className }: CopyButtonProps) {
+  const [copied, setCopied] = useState(false)
 
-  async function onCopy() {
+  const handleCopy = useCallback(async () => {
     try {
-      await navigator.clipboard.writeText(value);
+      await navigator.clipboard.writeText(text)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
     } catch {
-      const ta = document.createElement("textarea");
-      ta.value = value;
-      document.body.appendChild(ta);
-      ta.select();
-      document.execCommand("copy");
-      ta.remove();
+      setCopied(false)
     }
-    setCopied(true);
-    toast.success(label ? `已复制${label}` : "已复制到剪贴板");
-    setTimeout(() => setCopied(false), 1500);
-  }
+  }, [text])
 
   return (
     <Button
-      type="button"
       variant="ghost"
-      size="icon-sm"
-      onClick={onCopy}
-      aria-label={label ? `复制${label}` : "复制"}
+      size="icon"
+      className={className}
+      onClick={handleCopy}
     >
-      {copied ? <Check className="text-success" /> : <Copy />}
+      {copied ? (
+        <Check className="h-4 w-4 text-success" />
+      ) : (
+        <Copy className="h-4 w-4" />
+      )}
     </Button>
-  );
+  )
 }

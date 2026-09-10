@@ -946,6 +946,61 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 	})
+	// 导入 WorkBuddy 桌面端导出的凭证 JSON（auth.Parse 兼容嵌套/扁平）。
+	mux.HandleFunc("POST /api/account/import", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Raw string `json:"raw"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.Raw) == "" {
+			apiError(w, http.StatusBadRequest, "请求体缺少 raw 字段")
+			return
+		}
+		au, err := auth.Parse([]byte(req.Raw))
+		if err != nil {
+			apiError(w, http.StatusBadRequest, "解析凭证失败："+err.Error())
+			return
+		}
+		if au.UID == "" || au.AccessToken == "" {
+			apiError(w, http.StatusBadRequest, "凭证缺少 uid 或 accessToken")
+			return
+		}
+		// 桌面端导出的 expiresAt 为毫秒时间戳，网关按秒处理
+		if au.ExpiresAt > 1_000_000_000_000 {
+			au.ExpiresAt /= 1000
+		}
+		doc := map[string]any{
+			"auth": map[string]any{
+				"accessToken":  au.AccessToken,
+				"refreshToken": au.RefreshToken,
+				"expiresAt":    au.ExpiresAt,
+				"domain":       au.Domain,
+			},
+			"account": map[string]any{
+				"uid":          au.UID,
+				"enterpriseId": au.EnterpriseID,
+				"nickname":     au.Nickname,
+			},
+		}
+		raw, err := json.MarshalIndent(doc, "", "  ")
+		if err != nil {
+			apiError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		_ = os.MkdirAll(a.cfg.AuthDir, 0o755)
+		fp := filepath.Join(a.cfg.AuthDir, "workbuddy-"+au.UID+".json")
+		tmp := fp + ".tmp"
+		if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+			apiError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if err := os.Rename(tmp, fp); err != nil {
+			apiError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		a.reloadAccounts()
+		log.Printf("imported account uid=%s nickname=%s file=%s", au.UID, au.Nickname, filepath.Base(fp))
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "uid": au.UID, "nickname": au.Nickname})
+	})
 	mux.HandleFunc("POST /api/account/disable", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			UID      string `json:"uid"`

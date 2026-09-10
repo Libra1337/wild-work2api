@@ -1,66 +1,97 @@
-import * as React from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react"
+import {
+  DEFAULT_THEME_MODE,
+  THEME_STORAGE_KEY,
+  ThemeContext,
+  enabledThemeModes,
+  themeModeOptions,
+  themeOptions,
+  type ThemeContextValue,
+  type ThemeId,
+  type ThemeMode,
+  type ThemeOption,
+} from "@/components/theme/theme-context"
 
-type ThemeMode = "light" | "dark" | "system";
+const SYSTEM_DARK_QUERY = "(prefers-color-scheme: dark)"
 
-interface ThemeContextValue {
-  mode: ThemeMode;
-  resolved: "light" | "dark";
-  setMode: (mode: ThemeMode) => void;
+function getSystemPrefersDark() {
+  return (
+    typeof window !== "undefined" &&
+    window.matchMedia(SYSTEM_DARK_QUERY).matches
+  )
 }
 
-const ThemeContext = React.createContext<ThemeContextValue | null>(null);
-const STORAGE_KEY = "ww2a.theme";
-
-function applyTheme(mode: ThemeMode) {
-  const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-  const resolved: "light" | "dark" =
-    mode === "dark" || (mode === "system" && prefersDark) ? "dark" : "light";
-  const root = document.documentElement;
-  root.dataset.theme = resolved === "dark" ? "tungsten-teal" : "porcelain-teal";
-  root.classList.toggle("dark", resolved === "dark");
-  root.style.colorScheme = resolved;
-  return resolved;
+function getStoredMode(): ThemeMode {
+  if (typeof window === "undefined") return DEFAULT_THEME_MODE
+  try {
+    const stored = window.localStorage.getItem(THEME_STORAGE_KEY) as ThemeMode | null
+    return stored && enabledThemeModes.has(stored) ? stored : DEFAULT_THEME_MODE
+  } catch {
+    return DEFAULT_THEME_MODE
+  }
 }
 
-export function ThemeProvider({ children }: { children: React.ReactNode }) {
-  const [mode, setModeState] = React.useState<ThemeMode>(() => {
-    try {
-      return (localStorage.getItem(STORAGE_KEY) as ThemeMode) || "system";
-    } catch {
-      return "system";
-    }
-  });
-  const [resolved, setResolved] = React.useState<"light" | "dark">(() =>
-    applyTheme(mode),
-  );
-
-  React.useEffect(() => {
-    setResolved(applyTheme(mode));
-    try {
-      localStorage.setItem(STORAGE_KEY, mode);
-    } catch {
-      /* 隐私模式下忽略 */
-    }
-  }, [mode]);
-
-  React.useEffect(() => {
-    if (mode !== "system") return;
-    const media = window.matchMedia("(prefers-color-scheme: dark)");
-    const onChange = () => setResolved(applyTheme("system"));
-    media.addEventListener("change", onChange);
-    return () => media.removeEventListener("change", onChange);
-  }, [mode]);
-
-  const value = React.useMemo(
-    () => ({ mode, resolved, setMode: setModeState }),
-    [mode, resolved],
-  );
-
-  return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;
+function persistMode(mode: ThemeMode) {
+  try {
+    window.localStorage.setItem(THEME_STORAGE_KEY, mode)
+  } catch {
+    // Ignore storage failures and keep the in-memory choice for this session.
+  }
 }
 
-export function useTheme() {
-  const ctx = React.useContext(ThemeContext);
-  if (!ctx) throw new Error("useTheme 必须在 ThemeProvider 内使用");
-  return ctx;
+function resolveThemeId(mode: ThemeMode, systemPrefersDark: boolean): ThemeId {
+  if (mode === "system") {
+    return systemPrefersDark ? "tungsten-dark" : "porcelain-moss"
+  }
+  return mode
+}
+
+function resolveTheme(mode: ThemeMode, systemPrefersDark: boolean) {
+  const themeId = resolveThemeId(mode, systemPrefersDark)
+  return (
+    themeOptions.find((option) => option.id === themeId) ??
+    themeOptions[0]
+  )
+}
+
+function applyTheme(theme: ThemeOption) {
+  const root = document.documentElement
+  root.dataset.theme = theme.id
+  root.classList.toggle("dark", theme.appearance === "dark")
+  root.style.colorScheme = theme.appearance
+}
+
+export function ThemeProvider({ children }: { children: ReactNode }) {
+  const [mode, setThemeMode] = useState<ThemeMode>(getStoredMode)
+  const [systemPrefersDark, setSystemPrefersDark] = useState(getSystemPrefersDark)
+  const theme = resolveTheme(mode, systemPrefersDark)
+
+  useEffect(() => {
+    const mediaQuery = window.matchMedia(SYSTEM_DARK_QUERY)
+    const handleChange = () => setSystemPrefersDark(mediaQuery.matches)
+
+    handleChange()
+    mediaQuery.addEventListener("change", handleChange)
+    return () => mediaQuery.removeEventListener("change", handleChange)
+  }, [])
+
+  useEffect(() => {
+    applyTheme(theme)
+    persistMode(mode)
+  }, [mode, theme])
+
+  const value = useMemo<ThemeContextValue>(
+    () => ({
+      mode,
+      theme,
+      options: themeModeOptions,
+      setMode(nextMode) {
+        if (!enabledThemeModes.has(nextMode)) return
+        setThemeMode(nextMode)
+      },
+    }),
+    [mode, theme],
+  )
+
+  return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>
 }

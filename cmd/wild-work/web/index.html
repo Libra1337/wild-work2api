@@ -1,43 +1,36 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="porcelain-moss">
   <head>
     <meta charset="UTF-8" />
     <script>
       (() => {
-        const key = "ww2a.theme"
+        const storageKey = "ww2a.theme"
         let mode = "system"
         try {
-          mode = localStorage.getItem(key) || "system"
+          mode = localStorage.getItem(storageKey) || "system"
         } catch {
           mode = "system"
         }
         const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches
         const theme =
-          mode === "dark" || (mode === "system" && prefersDark)
-            ? "tungsten-teal"
-            : "porcelain-teal"
+          mode === "tungsten-dark" || (mode === "system" && prefersDark)
+            ? "tungsten-dark"
+            : "porcelain-moss"
         const root = document.documentElement
         root.dataset.theme = theme
-        root.classList.toggle("dark", theme === "tungsten-teal")
-        root.style.colorScheme = theme === "tungsten-teal" ? "dark" : "light"
+        root.classList.toggle("dark", theme === "tungsten-dark")
+        root.style.colorScheme = theme === "tungsten-dark" ? "dark" : "light"
       })()
     </script>
     <link rel="icon" href="./logo.png" type="image/png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta
-      name="theme-color"
-      content="#f7f6f3"
-      media="(prefers-color-scheme: light)"
+      name="description"
+      content="wild-work2api 控制台 — 多渠道账号聚合 OpenAI 兼容网关"
     />
-    <meta
-      name="theme-color"
-      content="#33322f"
-      media="(prefers-color-scheme: dark)"
-    />
-    <meta name="description" content="wild-work2api 控制台 — 多渠道账号聚合 OpenAI 兼容网关" />
     <title>wild-work2api · 控制台</title>
-    <script type="module" crossorigin src="./assets/index-Dt6iIqST.js"></script>
-    <link rel="stylesheet" crossorigin href="./assets/index-BG8e90Cm.css">
+    <script type="module" crossorigin src="./assets/index-DaGdNScE.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-BW0qi1x6.css">
   </head>
   <body>
     <div id="root"></div>
