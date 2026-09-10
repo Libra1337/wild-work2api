@@ -165,11 +165,16 @@ func sanitizeContent(v any) (any, bool) {
 
 // sanitizeMessages 净化 messages 中的 content；任一命中返回 true。
 // 净化 = 已知句精确改写 + 通用 prose 变形（反逐字匹配，兜底未知模板句）。
+// role=tool 的消息（工具结果：文件内容/命令输出）跳过——上游审核不扫工具输出，
+// 变异纯属破坏数据（模型读到被插空格的文件内容，写回时会引入脏字符）。
 func sanitizeMessages(messages []any) bool {
 	changed := false
 	for _, msg := range messages {
 		m, ok := msg.(map[string]any)
 		if !ok {
+			continue
+		}
+		if role, _ := m["role"].(string); strings.EqualFold(strings.TrimSpace(role), "tool") {
 			continue
 		}
 		c, ok := m["content"]

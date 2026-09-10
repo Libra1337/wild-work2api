@@ -37,3 +37,25 @@ func TestWaitFirstContentReplay(t *testing.T) {
 		t.Fatalf("replay mismatch:\n got: %s\nwant: %s", got.String(), upstream)
 	}
 }
+
+// 回归：`data:` 短载荷（空串/心跳/一两个字符）不得触发 slice 越界 panic。
+func TestWaitFirstContentShortPayload(t *testing.T) {
+	upstream := "data:\n\n" +
+		"data: x\n\n" +
+		": ping\n\n" +
+		"data: {\"id\":\"k\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\n" +
+		"data: [DONE]\n\n"
+	br := bufio.NewReaderSize(strings.NewReader(upstream), 64*1024)
+	var sink bytes.Buffer
+	if err := waitFirstContent(br, &sink); err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	brc := &bufferedStream{br: br, rc: io.NopCloser(strings.NewReader("")), prefix: sink.Bytes()}
+	var got bytes.Buffer
+	if _, err := io.Copy(&got, brc); err != nil {
+		t.Fatalf("copy err=%v", err)
+	}
+	if got.String() != upstream {
+		t.Fatalf("replay mismatch:\n got: %q\nwant: %q", got.String(), upstream)
+	}
+}

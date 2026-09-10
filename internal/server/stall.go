@@ -7,8 +7,21 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"strings"
 	"time"
 )
+
+// trimDataPrefix 剥离 SSE data 前缀（兼容 "data: " 与 "data:"）。
+func trimDataPrefix(line string) (string, bool) {
+	if !strings.HasPrefix(line, "data:") {
+		return "", false
+	}
+	rest := line[5:]
+	if strings.HasPrefix(rest, " ") {
+		rest = rest[1:]
+	}
+	return rest, true
+}
 
 // firstContentTimeout 首个内容块等待上限。正常模型首块在秒级到达（实测中位
 // ~1.5s）；偶发排队/卡死时流长时间静默（实测 80s+ 零 token）。阈值取 15s：
@@ -27,12 +40,8 @@ func waitFirstContent(br *bufio.Reader, sink *bytes.Buffer) error {
 			if sink != nil && sink.Len() < 1<<20 {
 				_, _ = sink.WriteString(line)
 			}
-			if len(line) > 5 && line[:5] == "data:" {
-				payload := line[5:]
-				if len(payload) > 0 && payload[0] == ' ' {
-					payload = payload[1:]
-				}
-				if payload[:5] == "[DONE" {
+			if payload, ok := trimDataPrefix(strings.TrimRight(line, "\r\n")); ok {
+				if len(payload) >= 5 && payload[:5] == "[DONE" {
 					return nil // 空流（上游直接结束），非卡流
 				}
 				if contentChunk(payload) {

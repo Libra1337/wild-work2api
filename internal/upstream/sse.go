@@ -23,6 +23,7 @@ func Aggregate(r io.Reader) (map[string]any, error) {
 		reasoning     strings.Builder
 		role          = "assistant"
 		finishReason  = "stop"
+		sawFinish     bool
 		usage         map[string]any
 		gotAnyContent bool
 		toolCalls     = map[int]map[string]any{}
@@ -61,6 +62,7 @@ func Aggregate(r io.Reader) (map[string]any, error) {
 							}
 							if fr, ok := c["finish_reason"].(string); ok && fr != "" {
 								finishReason = fr
+								sawFinish = true
 							}
 							if delta, ok := c["delta"].(map[string]any); ok {
 								if r2, ok := delta["role"].(string); ok && r2 != "" {
@@ -98,6 +100,22 @@ func Aggregate(r io.Reader) (map[string]any, error) {
 								if txt, ok := msg["content"].(string); ok {
 									content.WriteString(txt)
 								}
+								// message 形态的 tool_calls 同样合并（非流式回包兜底）
+								if tcs, ok := msg["tool_calls"].([]any); ok {
+									for j, tc := range tcs {
+										call, ok := tc.(map[string]any)
+										if !ok {
+											continue
+										}
+										merged, seen := toolCalls[j]
+										if !seen {
+											merged = map[string]any{"index": j}
+											toolCalls[j] = merged
+											toolOrder = append(toolOrder, j)
+										}
+										mergeToolCallDelta(merged, call)
+									}
+								}
 							}
 						}
 					}
@@ -113,6 +131,15 @@ func Aggregate(r io.Reader) (map[string]any, error) {
 	}
 	if created == 0 {
 		created = float64(time.Now().Unix())
+	}
+	// 上游流被掐（未见 finish_reason）时的兜底：带 tool_calls 就报 tool_calls，
+	// 否则报 stop——避免把截断的调用谎报成正常文本结束。
+	if !sawFinish {
+		if len(toolOrder) > 0 {
+			finishReason = "tool_calls"
+		} else {
+			finishReason = "stop"
+		}
 	}
 	message := map[string]any{
 		"role":    role,
@@ -195,27 +222,60 @@ func sortInts(a []int) {
 // 背景：实测 glm-5.3 等模型的每个 delta 都携带全字段空值
 // （content:""/reasoning_content:""/tool_calls:[]/function_call/extra_fields），
 // 且 tool_calls 续片带空 name —— 逐字透传会让下游协议转换层
-// （Anthropic 化网关/客户端）解析崩溃。重建规则：
-//   - 首帧带 id/object/created/model；usage 恒透传
-//   - delta 只保留非空字段（role 只发一次）
+// （Anthropic 化网关/客户端）解析崩溃。重建规则（对齐 OpenAI 规范形态，
+// 严格的下游转换器依赖这些约定）：
+//   - 每帧都带 id/object/created/model（首帧记忆，后续复用）
+//   - 首个带 delta 的帧强制携带 role:"assistant"（部分模型 role 只在末帧出现）
+//   - delta 只保留非空字段
 //   - tool_calls 片段剔除空 id/type/name/arguments；纯噪音帧整帧丢弃
+//   - usage 单独成帧时补 "choices":[]（规范形态，防 choices[0] 越界）
+//   - 上游 error 帧原样透传（不吞错）
 type chunkRebuilder struct {
-	headerSent bool
+	id, model  string
+	created    any
+	headerSeen bool
 	roleSent   bool
 }
 
 func (rb *chunkRebuilder) rebuild(chunk map[string]any) map[string]any {
 	out := map[string]any{}
-	if !rb.headerSent {
+	// 上游 error 帧原样透传（含 choices/usage 均无的纯错误帧）
+	if _, ok := chunk["error"]; ok {
 		for _, k := range []string{"id", "object", "created", "model"} {
 			if v, ok := chunk[k]; ok && v != nil {
 				out[k] = v
 			}
 		}
-		rb.headerSent = true
+		out["error"] = chunk["error"]
+		return out
 	}
-	if u, ok := chunk["usage"]; ok && u != nil {
-		out["usage"] = u
+	if !rb.headerSeen {
+		for _, k := range []string{"id", "object", "created", "model"} {
+			if v, ok := chunk[k]; ok && v != nil {
+				out[k] = v
+				switch k {
+				case "id":
+					rb.id, _ = v.(string)
+				case "model":
+					rb.model, _ = v.(string)
+				case "created":
+					rb.created = v
+				}
+			}
+		}
+		rb.headerSeen = true
+	} else {
+		// 每帧补全帧头（OpenAI 规范：所有 chunk 都携带这四字段）
+		if rb.id != "" {
+			out["id"] = rb.id
+		}
+		out["object"] = "chat.completion.chunk"
+		if rb.created != nil {
+			out["created"] = rb.created
+		}
+		if rb.model != "" {
+			out["model"] = rb.model
+		}
 	}
 	choices, _ := chunk["choices"].([]any)
 	var outChoices []any
@@ -245,6 +305,12 @@ func (rb *chunkRebuilder) rebuild(chunk map[string]any) map[string]any {
 		if tcs := cleanToolCallFragments(delta["tool_calls"]); len(tcs) > 0 {
 			nd["tool_calls"] = tcs
 		}
+		// 首个带实质 delta 的帧强制补 role（部分模型只在末帧发 role，
+		// 下游转换器依赖首帧 role 开启 assistant 消息）
+		if !rb.roleSent && len(nd) > 0 {
+			nd["role"] = "assistant"
+			rb.roleSent = true
+		}
 		if len(nd) > 0 || nc["finish_reason"] != nil {
 			nc["delta"] = nd
 			outChoices = append(outChoices, nc)
@@ -253,9 +319,18 @@ func (rb *chunkRebuilder) rebuild(chunk map[string]any) map[string]any {
 	if len(outChoices) > 0 {
 		out["choices"] = outChoices
 	}
+	if u, ok := chunk["usage"]; ok && u != nil {
+		out["usage"] = u
+		// usage 单独成帧时补规范空 choices（防严格客户端 choices[0] 越界）
+		if _, has := out["choices"]; !has {
+			out["choices"] = []any{}
+		}
+	}
 	// 空帧（无 choices 且无 usage）整帧丢弃
-	if len(out) == 0 {
-		return nil
+	if _, hasChoices := out["choices"]; !hasChoices {
+		if _, hasUsage := out["usage"]; !hasUsage {
+			return nil
+		}
 	}
 	return out
 }
@@ -345,8 +420,7 @@ func Stream(w http.ResponseWriter, r io.Reader) error {
 		line, err := br.ReadString('\n')
 		if line != "" {
 			trimmed := strings.TrimRight(line, "\r\n")
-			if strings.HasPrefix(trimmed, "data: ") {
-				payload := strings.TrimPrefix(trimmed, "data: ")
+			if payload, ok := trimDataPrefix(trimmed); ok {
 				if payload == "[DONE]" {
 					sawDone = true
 					if werr := write("data: [DONE]\n\n"); werr != nil {
@@ -403,6 +477,18 @@ func Stream(w http.ResponseWriter, r io.Reader) error {
 		}
 	}
 	return nil
+}
+
+// trimDataPrefix 剥离 SSE data 前缀（兼容 "data: " 与 "data:" 两种形式）。
+func trimDataPrefix(line string) (string, bool) {
+	if !strings.HasPrefix(line, "data:") {
+		return "", false
+	}
+	rest := line[5:]
+	if strings.HasPrefix(rest, " ") {
+		rest = rest[1:]
+	}
+	return rest, true
 }
 
 // hasFinishReason 判断重建后的 chunk 是否携带 finish_reason。
