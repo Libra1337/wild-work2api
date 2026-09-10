@@ -2,6 +2,7 @@
 package server
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -434,9 +435,32 @@ func (h *Handler) dispatchChat(rt *Runtime, body []byte, w http.ResponseWriter) 
 			_, _ = w.Write(respBody)
 			return nil, "", false
 		}
+		// 卡流检测：流打开后 firstContentTimeout 内未出现首个内容块
+		// （content/reasoning_content/tool_calls），视为该账号/模型卡死，
+		// 关流换号重试，避免把死流耗到客户端超时。
+		brc := &bufferedStream{br: bufio.NewReaderSize(rc, 64*1024), rc: rc}
+		progress := make(chan error, 1)
+		go func() { progress <- waitFirstContent(brc.br) }()
+		select {
+		case perr := <-progress:
+			if perr != nil && perr != io.EOF {
+				lastErr = perr
+				h.stickyClear(rt)
+				rt.Pool.NoteError(acct.UID, h.cfg.ErrThreshold, h.cfg.ErrCooldown)
+				_ = rc.Close()
+				continue
+			}
+		case <-time.After(firstContentTimeout):
+			log.Printf("chat stall detected platform=%s uid=%s model? first content > %v, rotate", rt.Kind, acct.UID, firstContentTimeout)
+			lastErr = fmt.Errorf("first content chunk timeout > %v", firstContentTimeout)
+			h.stickyClear(rt)
+			rt.Pool.NoteError(acct.UID, h.cfg.ErrThreshold, h.cfg.ErrCooldown)
+			_ = rc.Close()
+			continue
+		}
 		rt.Pool.NoteSuccess(acct.UID)
 		h.stickySuccess(rt)
-		return rc, acct.UID, true
+		return brc, acct.UID, true
 	}
 	msg := "all accounts unavailable (cooling/disabled)"
 	if lastErr != nil {
