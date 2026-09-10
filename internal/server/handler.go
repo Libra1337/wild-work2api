@@ -111,7 +111,15 @@ func NewHandler(cfg Config) *Handler {
 	h.mux.HandleFunc("POST /v1/chat/completions", h.withAuth(h.chatCompletions))
 	h.mux.HandleFunc("POST /v1/responses", h.withAuth(h.responses))
 	h.mux.HandleFunc("POST /v1/messages", h.withAuth(h.anthropicMessages))
+	h.mux.HandleFunc("POST /v1/messages/count_tokens", h.withAuth(h.anthropicCountTokens))
 	h.mux.HandleFunc("GET /v1/models", h.withAuth(h.models))
+	// 无 /v1 前缀的别名：兼容把 Base URL 填成裸域名的客户端
+	// （它们会拼出 /chat/completions 而不是 /v1/chat/completions）
+	h.mux.HandleFunc("POST /chat/completions", h.withAuth(h.chatCompletions))
+	h.mux.HandleFunc("POST /responses", h.withAuth(h.responses))
+	h.mux.HandleFunc("POST /messages", h.withAuth(h.anthropicMessages))
+	h.mux.HandleFunc("POST /messages/count_tokens", h.withAuth(h.anthropicCountTokens))
+	h.mux.HandleFunc("GET /models", h.withAuth(h.models))
 	h.mux.HandleFunc("GET /status", h.withAuth(h.status))
 	h.mux.HandleFunc("GET /healthz", h.healthz)
 	if cfg.WebUI != nil {
@@ -357,10 +365,8 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 	// 面向只从正文标签提取思考的客户端（ZCode OpenAI 兼容模式等），
 	// 标签形态可穿透任意中转站。例：kimi-k3-1@think / workbuddy/glm-5.3@think。
 	requestedModel := peek.Model
-	thinkTag := strings.HasSuffix(peek.Model, "@think")
-	if thinkTag {
-		peek.Model = strings.TrimSuffix(peek.Model, "@think")
-	}
+	var thinkTag bool
+	peek.Model, thinkTag = stripThinkSuffix(peek.Model)
 	rt, model, err := h.runtimeForModel(peek.Model)
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_model", err.Error())

@@ -598,6 +598,9 @@ func (h *Handler) responses(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = json.Unmarshal(raw, &wantStream)
 
+	// @think 后缀统一识别：本端点原生输出 reasoning 事件，剥后缀即可
+	model, _ = stripThinkSuffix(model)
+
 	// 渠道前缀路由（与 chatCompletions 一致）
 	rt, bareModel, err := h.runtimeForModel(model)
 	if err != nil {

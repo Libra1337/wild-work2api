@@ -13,6 +13,16 @@ import (
 	"sync"
 )
 
+// stripThinkSuffix 剥离模型名的 @think 后缀，返回剥后名称与是否带后缀。
+// 三种端点统一识别：chat completions 走标签包装，Anthropic/Responses 端点
+// 剥后缀走原生推理（避免后缀导致模型名无法解析而错误回退/404）。
+func stripThinkSuffix(model string) (string, bool) {
+	if strings.HasSuffix(model, "@think") {
+		return strings.TrimSuffix(model, "@think"), true
+	}
+	return model, false
+}
+
 // thinkTagWriter 包装 ResponseWriter，逐行改写 SSE data 帧。
 type thinkTagWriter struct {
 	w           http.ResponseWriter

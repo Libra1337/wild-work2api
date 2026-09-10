@@ -243,6 +243,8 @@ func (h *Handler) anthropicMessages(w http.ResponseWriter, r *http.Request) {
 		anthropicError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return
 	}
+	// @think 后缀统一识别：本端点原生输出 thinking 块，剥后缀即可
+	model, _ = stripThinkSuffix(model)
 
 	rt, model, err := h.runtimeForModelWithFallback(model, anthropicDefaultModel)
 	if err != nil {
@@ -530,6 +532,61 @@ func anthropicRelay(w http.ResponseWriter, rc io.ReadCloser, model string) map[s
 	})
 	emit("message_stop", map[string]any{})
 	return usage
+}
+
+// anthropicCountTokens 处理 POST /v1/messages/count_tokens。
+// Anthropic 协议客户端（Claude Code / ZCode）发消息前会调用此端点做上下文
+// 预算；没有它会 404 导致整轮失败。返回粗略估算（ASCII ~4 字符/token，
+// CJK ~1.5 字符/token），足够客户端做裁剪决策。
+func (h *Handler) anthropicCountTokens(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, 16<<20))
+	if err != nil {
+		anthropicError(w, http.StatusBadRequest, "invalid_request_error", "read body: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"input_tokens": estimateTokens(body)})
+}
+
+// estimateTokens 粗估 JSON 请求体的 token 数。
+func estimateTokens(raw []byte) int64 {
+	var root any
+	if json.Unmarshal(raw, &root) != nil {
+		return int64(len(raw) / 4)
+	}
+	var walk func(v any) int64
+	walk = func(v any) int64 {
+		switch t := v.(type) {
+		case string:
+			ascii, cjk := 0, 0
+			for _, r := range t {
+				if r > 127 {
+					cjk++
+				} else {
+					ascii++
+				}
+			}
+			return int64(float64(ascii)/4 + float64(cjk)/1.5)
+		case map[string]any:
+			n := int64(0)
+			for k, vv := range t {
+				n += int64(len(k) / 4)
+				n += walk(vv)
+			}
+			return n
+		case []any:
+			n := int64(0)
+			for _, vv := range t {
+				n += walk(vv)
+			}
+			return n
+		}
+		return 0
+	}
+	n := walk(root)
+	if n < 1 {
+		n = 1
+	}
+	return n
 }
 
 // ---------- 工具函数 ----------
