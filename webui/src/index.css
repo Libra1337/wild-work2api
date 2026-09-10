@@ -1,0 +1,122 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "@fontsource-variable/geist";
+@import "@fontsource-variable/geist-mono";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --font-sans: "Geist Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Geist Mono Variable", ui-monospace, monospace;
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-success: var(--success);
+  --color-success-muted: var(--success-muted);
+  --color-success-foreground: var(--success-foreground);
+  --color-warning: var(--warning);
+  --color-warning-muted: var(--warning-muted);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-info: var(--info);
+  --color-info-muted: var(--info-muted);
+  --color-info-foreground: var(--info-foreground);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+}
+
+/* 亮色主题「porcelain-teal」：暖瓷灰底 + 青绿主色 */
+:root,
+html[data-theme="porcelain-teal"] {
+  --background: oklch(0.966 0.005 95);
+  --foreground: oklch(0.245 0.015 95);
+  --card: oklch(0.992 0.003 95);
+  --card-foreground: oklch(0.245 0.015 95);
+  --popover: oklch(0.992 0.003 95);
+  --popover-foreground: oklch(0.245 0.015 95);
+  --primary: oklch(0.52 0.1 185);
+  --primary-foreground: oklch(0.985 0.005 95);
+  --secondary: oklch(0.928 0.008 95);
+  --secondary-foreground: oklch(0.31 0.015 95);
+  --muted: oklch(0.918 0.008 95);
+  --muted-foreground: oklch(0.5 0.015 95);
+  --accent: oklch(0.9 0.012 95);
+  --accent-foreground: oklch(0.28 0.015 95);
+  --destructive: oklch(0.58 0.19 25);
+  --destructive-foreground: oklch(0.985 0.005 95);
+  --border: oklch(0.885 0.01 95);
+  --input: oklch(0.885 0.01 95);
+  --ring: oklch(0.58 0.1 185);
+  --success: oklch(0.55 0.11 152);
+  --success-muted: oklch(0.915 0.04 152);
+  --success-foreground: oklch(0.985 0.005 95);
+  --warning: oklch(0.66 0.13 75);
+  --warning-muted: oklch(0.925 0.045 75);
+  --warning-foreground: oklch(0.26 0.03 75);
+  --info: oklch(0.56 0.1 240);
+  --info-muted: oklch(0.915 0.03 240);
+  --info-foreground: oklch(0.985 0.005 95);
+  --radius: 0.625rem;
+}
+
+/* 暗色主题「tungsten-teal」：钨金深灰 + 亮青绿 */
+html[data-theme="tungsten-teal"] {
+  --background: oklch(0.215 0.008 95);
+  --foreground: oklch(0.93 0.008 95);
+  --card: oklch(0.252 0.01 95);
+  --card-foreground: oklch(0.93 0.008 95);
+  --popover: oklch(0.252 0.01 95);
+  --popover-foreground: oklch(0.93 0.008 95);
+  --primary: oklch(0.72 0.11 185);
+  --primary-foreground: oklch(0.21 0.03 185);
+  --secondary: oklch(0.3 0.01 95);
+  --secondary-foreground: oklch(0.9 0.008 95);
+  --muted: oklch(0.295 0.01 95);
+  --muted-foreground: oklch(0.68 0.012 95);
+  --accent: oklch(0.32 0.012 95);
+  --accent-foreground: oklch(0.93 0.008 95);
+  --destructive: oklch(0.65 0.18 25);
+  --destructive-foreground: oklch(0.985 0.005 95);
+  --border: oklch(0.34 0.012 95);
+  --input: oklch(0.34 0.012 95);
+  --ring: oklch(0.66 0.1 185);
+  --success: oklch(0.68 0.11 152);
+  --success-muted: oklch(0.31 0.045 152);
+  --success-foreground: oklch(0.16 0.03 152);
+  --warning: oklch(0.76 0.12 75);
+  --warning-muted: oklch(0.32 0.045 75);
+  --warning-foreground: oklch(0.2 0.03 75);
+  --info: oklch(0.7 0.1 240);
+  --info-muted: oklch(0.31 0.035 240);
+  --info-foreground: oklch(0.16 0.03 240);
+}
+
+html {
+  background-color: var(--background);
+}
+
+body {
+  @apply bg-background text-foreground font-sans antialiased;
+  line-height: 1.5;
+}
+
+* {
+  border-color: var(--border);
+}
