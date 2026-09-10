@@ -18,6 +18,7 @@ export default function App() {
   return (
     <HashRouter>
       <Routes>
+        <Route path="/" element={<Navigate to="/admin/dashboard" replace />} />
         <Route path="/admin" element={<AppLayout />}>
           <Route index element={<Navigate to="/admin/dashboard" replace />} />
           <Route path="dashboard" element={<DashboardPage />} />
