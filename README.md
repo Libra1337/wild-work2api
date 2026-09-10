@@ -14,7 +14,7 @@ Reso（wild-work2api）是一个自托管的多渠道账号聚合网关：
 - **三渠道聚合**：WorkBuddy(腾讯 CodeBuddy) + TraeWork(字节) + Qoder(阿里)，模型 ID 带渠道前缀路由（`workbuddy/<model>`、`traework/<model>`、`qoder/<model>`）
 - **Web 控制台**：浏览器里添加账号（OAuth 授权自动导入）、签到、刷新积分、停用、删除、查看费率与日志——全部自助，无需命令行
 - **账号池治理**：粘性路由优先复用同账号以利用会话缓存、每日定时签到领额度、token 保活、冷却状态机
-- **OpenAI 兼容**：`/v1/chat/completions`、`/v1/models`，支持流式/非流式，现有 SDK 零改造接入
+- **OpenAI 兼容**：`/v1/chat/completions`、`/v1/models`，支持流式/非流式，现有 SDK 零改造接入；另含 **`/v1/responses`（Responses API）兼容层**，Codex 等 Responses 协议客户端零配置直连（含 function calling 往返）
 - **单二进制**：Go + go:embed，Web 控制台直接打进二进制，无外部依赖
 
 > [!NOTE]
@@ -96,9 +96,26 @@ curl http://localhost:7863/v1/models -H "Authorization: Bearer your-api-key"
 | 端点 | 鉴权 | 说明 |
 |---|---|---|
 | `POST /v1/chat/completions` | Bearer | OpenAI 兼容补全，流式/非流式 |
+| `POST /v1/responses` | Bearer | **Responses API 兼容层**（Codex 等客户端），请求/事件双向翻译，支持 function calling |
 | `GET /v1/models` | Bearer | 各渠道可用模型（带前缀） |
 | `GET /status` | Bearer | 账号池状态 |
 | `GET /healthz` | 无 | 健康检查 |
+
+### Codex 接入（Responses API）
+
+```toml
+# ~/.codex/config.toml
+[model_providers.reso]
+name = "Reso"
+base_url = "https://<your-host>/v1"
+wire_api = "responses"
+env_key = "RESO_API_KEY"
+```
+
+```bash
+export RESO_API_KEY=<api_key>
+codex -c model_provider=reso -m workbuddy/glm-5.3
+```
 
 ## 配置说明
 
