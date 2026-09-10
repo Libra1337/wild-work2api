@@ -78,6 +78,7 @@ type App struct {
 
 	sessMu   sync.Mutex // 保护面板会话表
 	sessions map[string]*adminSession
+	sessFP   string // 面板会话持久化文件（重启/部署不丢登录）
 
 	logFile *os.File
 
@@ -100,6 +101,9 @@ func New(opts Options) (*App, error) {
 	}
 	a.loginStateFP = filepath.Join(filepath.Dir(opts.Config.StateFile), "login-state.json")
 	a.pricingFP = filepath.Join(filepath.Dir(opts.Config.StateFile), "pricing-cache.json")
+	// 面板会话持久化：部署重启后保持登录
+	a.sessFP = filepath.Join(filepath.Dir(opts.Config.StateFile), "panel_sessions.json")
+	a.loadSessions()
 
 	// 日志文件 data/app.log
 	logFP := filepath.Join(filepath.Dir(opts.Config.StateFile), "app.log")
@@ -1155,6 +1159,7 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 			}
 		}
 		a.sessions[token] = &adminSession{CSRF: csrf, Expires: now.Add(sessionTTL)}
+		a.saveSessionsLocked()
 		a.sessMu.Unlock()
 		http.SetCookie(w, &http.Cookie{
 			Name:     sessionCookieName,
@@ -1172,6 +1177,7 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 		if c, err := r.Cookie(sessionCookieName); err == nil {
 			a.sessMu.Lock()
 			delete(a.sessions, c.Value)
+			a.saveSessionsLocked()
 			a.sessMu.Unlock()
 		}
 		http.SetCookie(w, &http.Cookie{
@@ -1197,8 +1203,49 @@ const (
 
 // adminSession 一次面板登录会话。
 type adminSession struct {
-	CSRF    string
-	Expires time.Time
+	CSRF    string    `json:"csrf"`
+	Expires time.Time `json:"expires"`
+}
+
+// loadSessions 启动时从磁盘恢复未过期会话（部署重启不丢登录）。
+func (a *App) loadSessions() {
+	if a.sessFP == "" {
+		return
+	}
+	raw, err := os.ReadFile(a.sessFP)
+	if err != nil {
+		return
+	}
+	var sessions map[string]*adminSession
+	if json.Unmarshal(raw, &sessions) != nil {
+		return
+	}
+	now := time.Now()
+	a.sessMu.Lock()
+	defer a.sessMu.Unlock()
+	if a.sessions == nil {
+		a.sessions = make(map[string]*adminSession)
+	}
+	for k, v := range sessions {
+		if v != nil && now.Before(v.Expires) {
+			a.sessions[k] = v
+		}
+	}
+}
+
+// saveSessionsLocked 落盘当前会话表（调用方持 sessMu）；tmp+rename 原子写。
+func (a *App) saveSessionsLocked() {
+	if a.sessFP == "" || a.sessions == nil {
+		return
+	}
+	raw, err := json.Marshal(a.sessions)
+	if err != nil {
+		return
+	}
+	tmp := a.sessFP + ".tmp"
+	if os.WriteFile(tmp, raw, 0o600) == nil {
+		_ = os.Rename(tmp, a.sessFP)
+	}
 }
 
 // authEnabled 面板鉴权是否启用（admin_password 非空）。
