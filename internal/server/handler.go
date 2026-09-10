@@ -447,19 +447,53 @@ func (h *Handler) dispatchChat(rt *Runtime, body []byte, w http.ResponseWriter) 
 }
 
 func (h *Handler) runtimeForModel(model string) (*Runtime, string, error) {
-	parts := strings.SplitN(strings.TrimSpace(model), "/", 2)
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return nil, "", fmt.Errorf("model must use explicit prefix: workbuddy/<model> / traework/<model> / qoder/<model>")
+	model = strings.TrimSpace(model)
+	parts := strings.SplitN(model, "/", 2)
+	if len(parts) == 2 && parts[0] != "" && parts[1] != "" {
+		kind := provider.Kind(parts[0])
+		rt := h.cfg.Runtimes[kind]
+		if rt == nil || rt.Pool == nil || rt.Upstream == nil {
+			return nil, "", fmt.Errorf("provider %q is not configured", kind)
+		}
+		if len(rt.Pool.List()) == 0 {
+			return nil, "", fmt.Errorf("provider %q has no account", kind)
+		}
+		return rt, parts[1], nil
 	}
-	kind := provider.Kind(parts[0])
-	rt := h.cfg.Runtimes[kind]
-	if rt == nil || rt.Pool == nil || rt.Upstream == nil {
-		return nil, "", fmt.Errorf("provider %q is not configured", kind)
+
+	// 裸模型名（无渠道前缀）：在已接入账号的渠道里自动解析。
+	// 优先按模型名精确命中（动态缓存 → 静态兜底）；无命中且仅有一个活跃渠道时按该渠道处理。
+	var hit *Runtime
+	var fallback *Runtime
+	active := 0
+	for _, k := range h.runtimeKinds() {
+		rt := h.cfg.Runtimes[k]
+		if rt.Pool == nil || rt.Upstream == nil || len(rt.Pool.List()) == 0 {
+			continue
+		}
+		active++
+		fallback = rt
+		if hit != nil {
+			continue
+		}
+		infos := h.fetchRuntimeModels(rt)
+		if len(infos) == 0 {
+			infos = rt.StaticModels
+		}
+		for _, mi := range infos {
+			if mi.ID == model {
+				hit = rt
+				break
+			}
+		}
 	}
-	if len(rt.Pool.List()) == 0 {
-		return nil, "", fmt.Errorf("provider %q has no account", kind)
+	if hit != nil {
+		return hit, model, nil
 	}
-	return rt, parts[1], nil
+	if active == 1 && fallback != nil {
+		return fallback, model, nil
+	}
+	return nil, "", fmt.Errorf("model %q not found; use explicit prefix: workbuddy/<model> / traework/<model> / qoder/<model>", model)
 }
 
 func rewriteModel(body []byte, model string) ([]byte, error) {
