@@ -88,6 +88,9 @@ type Client struct {
 	// BillingHTTP 供账单/签到接口使用（短超时，慢网络下避免面板操作长时间假死）。
 	// 为 nil 时回退到 HTTP。
 	BillingHTTP *http.Client
+	// StreamHTTP 聊天流专用客户端（Timeout=0，仅响应头/空闲超时）；
+	// 为 nil 时回退 HTTP（注意 HTTP 的总超时会掐断长输出）。
+	StreamHTTP *http.Client
 
 	ChatBaseCN      string
 	BillingBaseCN   string
@@ -125,19 +128,39 @@ func (c *Client) setEfforts(m map[string][]string) {
 
 // New 生产默认值。配置连接池减少 TLS 握手。
 func New() *Client {
+	// 短 RPC（刷新/签到/余额/模型）：总超时 120s
 	tr := &http.Transport{
 		MaxIdleConns:        100,
 		MaxIdleConnsPerHost: 20,
 		IdleConnTimeout:     90 * time.Second,
+		ForceAttemptHTTP2:   true,
+	}
+	// 聊天流专用：无总超时（长输出不被掐断），仅约束响应头与空闲连接
+	streamTr := &http.Transport{
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   32,
+		IdleConnTimeout:       300 * time.Second,
+		ForceAttemptHTTP2:     true,
+		TLSHandshakeTimeout:   15 * time.Second,
+		ResponseHeaderTimeout: 120 * time.Second,
 	}
 	return &Client{
 		HTTP:            &http.Client{Timeout: 120 * time.Second, Transport: tr},
+		StreamHTTP:      &http.Client{Transport: streamTr},
 		BillingHTTP:     &http.Client{Timeout: 30 * time.Second, Transport: tr},
 		ChatBaseCN:      "https://copilot.tencent.com",
 		BillingBaseCN:   "https://www.codebuddy.cn",
 		ChatBaseGlobal:  "https://www.workbuddy.ai",
 		BillingBaseGlob: "https://www.workbuddy.ai",
 	}
+}
+
+// streamClient 返回聊天流使用的 HTTP 客户端（无总超时，防止长输出被掐断）。
+func (c *Client) streamClient() *http.Client {
+	if c.StreamHTTP != nil {
+		return c.StreamHTTP
+	}
+	return c.HTTP
 }
 
 // billingClient 返回账单接口用的 HTTP 客户端。
@@ -257,7 +280,7 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status
 		return nil, 0, nil, err
 	}
 	ChatHeaders(req, a)
-	resp, err := c.HTTP.Do(req)
+	resp, err := c.streamClient().Do(req)
 	if err != nil {
 		log.Printf("chat_stream uid=%s: transport error: %v", a.UID, err)
 		return nil, 0, nil, err

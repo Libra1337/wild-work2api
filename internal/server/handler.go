@@ -82,7 +82,7 @@ func NewHandler(cfg Config) *Handler {
 		}
 	}
 	if cfg.MaxRotate <= 0 {
-		cfg.MaxRotate = 3
+		cfg.MaxRotate = 5
 	}
 	if cfg.HardCooldown <= 0 {
 		cfg.HardCooldown = 12 * time.Hour

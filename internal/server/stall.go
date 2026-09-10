@@ -9,9 +9,10 @@ import (
 	"time"
 )
 
-// firstContentTimeout 首个内容块等待上限。正常模型首块在秒级到达；
-// 上游偶发排队/卡死时流会长时间静默（实测 80s+ 无 token），此时应换号重试。
-const firstContentTimeout = 60 * time.Second
+// firstContentTimeout 首个内容块等待上限。正常模型首块在秒级到达（实测中位
+// ~1.5s）；偶发排队/卡死时流长时间静默（实测 80s+ 零 token）。阈值取 15s：
+// 兼顾慢启动的大上下文请求，又能在客户端（中转站 ~80s 超时）崩溃前完成换号。
+const firstContentTimeout = 15 * time.Second
 
 // waitFirstContent 逐行读取 SSE，直到出现首个「有实质内容」的块或流终止。
 // 返回 nil 表示见到内容块（或 [DONE]/EOF 空流，交由上层正常处理）；
