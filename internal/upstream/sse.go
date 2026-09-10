@@ -191,6 +191,119 @@ func sortInts(a []int) {
 
 // Stream 透传上游 SSE 到 w（每行 flush），保证至少写一个 [DONE]。
 // 调用方必须先设置过 status 200；本函数自设 SSE headers。
+// chunkRebuilder 把上游噪音分片重建成规范 OpenAI chunk（白名单 + 去空）。
+// 背景：实测 glm-5.3 等模型的每个 delta 都携带全字段空值
+// （content:""/reasoning_content:""/tool_calls:[]/function_call/extra_fields），
+// 且 tool_calls 续片带空 name —— 逐字透传会让下游协议转换层
+// （Anthropic 化网关/客户端）解析崩溃。重建规则：
+//   - 首帧带 id/object/created/model；usage 恒透传
+//   - delta 只保留非空字段（role 只发一次）
+//   - tool_calls 片段剔除空 id/type/name/arguments；纯噪音帧整帧丢弃
+type chunkRebuilder struct {
+	headerSent bool
+	roleSent   bool
+}
+
+func (rb *chunkRebuilder) rebuild(chunk map[string]any) map[string]any {
+	out := map[string]any{}
+	if !rb.headerSent {
+		for _, k := range []string{"id", "object", "created", "model"} {
+			if v, ok := chunk[k]; ok && v != nil {
+				out[k] = v
+			}
+		}
+		rb.headerSent = true
+	}
+	if u, ok := chunk["usage"]; ok && u != nil {
+		out["usage"] = u
+	}
+	choices, _ := chunk["choices"].([]any)
+	var outChoices []any
+	for _, ci := range choices {
+		c, ok := ci.(map[string]any)
+		if !ok {
+			continue
+		}
+		nc := map[string]any{}
+		if v, ok := c["index"]; ok {
+			nc["index"] = v
+		}
+		if fr, ok := c["finish_reason"].(string); ok && fr != "" {
+			nc["finish_reason"] = fr
+		}
+		delta, _ := c["delta"].(map[string]any)
+		nd := map[string]any{}
+		for _, k := range []string{"content", "reasoning_content"} {
+			if s, ok := delta[k].(string); ok && s != "" {
+				nd[k] = s
+			}
+		}
+		if role, ok := delta["role"].(string); ok && role != "" && !rb.roleSent {
+			nd["role"] = role
+			rb.roleSent = true
+		}
+		if tcs := cleanToolCallFragments(delta["tool_calls"]); len(tcs) > 0 {
+			nd["tool_calls"] = tcs
+		}
+		if len(nd) > 0 || nc["finish_reason"] != nil {
+			nc["delta"] = nd
+			outChoices = append(outChoices, nc)
+		}
+	}
+	if len(outChoices) > 0 {
+		out["choices"] = outChoices
+	}
+	// 空帧（无 choices 且无 usage）整帧丢弃
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// cleanToolCallFragments 剔除 tool_call 分片里的空值字段与纯噪音片。
+func cleanToolCallFragments(v any) []map[string]any {
+	tcs, ok := v.([]any)
+	if !ok || len(tcs) == 0 {
+		return nil
+	}
+	out := make([]map[string]any, 0, len(tcs))
+	for _, ti := range tcs {
+		tc, ok := ti.(map[string]any)
+		if !ok {
+			continue
+		}
+		n := map[string]any{}
+		if idx, ok := tc["index"]; ok {
+			n["index"] = idx
+		}
+		if s, ok := tc["id"].(string); ok && s != "" {
+			n["id"] = s
+		}
+		if s, ok := tc["type"].(string); ok && s != "" {
+			n["type"] = s
+		}
+		if fn, ok := tc["function"].(map[string]any); ok {
+			nfn := map[string]any{}
+			if s, ok := fn["name"].(string); ok && s != "" {
+				nfn["name"] = s
+			}
+			if s, ok := fn["arguments"].(string); ok && s != "" {
+				nfn["arguments"] = s
+			}
+			if len(nfn) > 0 {
+				n["function"] = nfn
+			}
+		}
+		// 只有 index 没有任何实质内容的纯噪音片丢弃
+		if len(n) <= 1 {
+			continue
+		}
+		out = append(out, n)
+	}
+	return out
+}
+
+// Stream 逐行读取上游 SSE，经白名单重建后转发；保证恰好一个 [DONE]。
 func Stream(w http.ResponseWriter, r io.Reader) error {
 	h := w.Header()
 	h.Set("Content-Type", "text/event-stream")
@@ -200,17 +313,50 @@ func Stream(w http.ResponseWriter, r io.Reader) error {
 	fl, _ := w.(http.Flusher)
 	br := bufio.NewReaderSize(r, 64*1024)
 	sawDone := false
+	rb := &chunkRebuilder{}
+	write := func(payload string) error {
+		if _, werr := io.WriteString(w, payload); werr != nil {
+			return werr
+		}
+		if fl != nil {
+			fl.Flush()
+		}
+		return nil
+	}
 	for {
 		line, err := br.ReadString('\n')
 		if line != "" {
-			if strings.HasPrefix(strings.TrimRight(line, "\r\n"), "data: [DONE]") {
-				sawDone = true
-			}
-			if _, werr := io.WriteString(w, line); werr != nil {
-				return werr
-			}
-			if fl != nil {
-				fl.Flush()
+			trimmed := strings.TrimRight(line, "\r\n")
+			if strings.HasPrefix(trimmed, "data: ") {
+				payload := strings.TrimPrefix(trimmed, "data: ")
+				if payload == "[DONE]" {
+					sawDone = true
+					if werr := write("data: [DONE]\n\n"); werr != nil {
+						return werr
+					}
+					continue
+				}
+				var chunk map[string]any
+				if json.Unmarshal([]byte(payload), &chunk) == nil {
+					if rebuilt := rb.rebuild(chunk); rebuilt != nil {
+						raw, merr := json.Marshal(rebuilt)
+						if merr == nil {
+							if werr := write("data: " + string(raw) + "\n\n"); werr != nil {
+								return werr
+							}
+						}
+					}
+				} else {
+					// 非 JSON 数据行原样透传（error 帧等）
+					if werr := write(line); werr != nil {
+						return werr
+					}
+				}
+			} else if trimmed != "" {
+				// 非 data 行（如裸 error 事件行）原样透传
+				if werr := write(line + "\n"); werr != nil {
+					return werr
+				}
 			}
 		}
 		if err != nil {
@@ -221,11 +367,8 @@ func Stream(w http.ResponseWriter, r io.Reader) error {
 		}
 	}
 	if !sawDone {
-		if _, err := io.WriteString(w, "data: [DONE]\n\n"); err != nil {
+		if err := write("data: [DONE]\n\n"); err != nil {
 			return err
-		}
-		if fl != nil {
-			fl.Flush()
 		}
 	}
 	return nil
