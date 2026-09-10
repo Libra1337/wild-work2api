@@ -110,6 +110,7 @@ func NewHandler(cfg Config) *Handler {
 	h.reqLogs.load()
 	h.mux.HandleFunc("POST /v1/chat/completions", h.withAuth(h.chatCompletions))
 	h.mux.HandleFunc("POST /v1/responses", h.withAuth(h.responses))
+	h.mux.HandleFunc("POST /v1/messages", h.withAuth(h.anthropicMessages))
 	h.mux.HandleFunc("GET /v1/models", h.withAuth(h.models))
 	h.mux.HandleFunc("GET /status", h.withAuth(h.status))
 	h.mux.HandleFunc("GET /healthz", h.healthz)
@@ -188,7 +189,17 @@ func (h *Handler) withAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if key := h.currentAPIKey(); key != "" {
 			authz := r.Header.Get("Authorization")
-			if !strings.HasPrefix(authz, "Bearer ") || strings.TrimPrefix(authz, "Bearer ") != key {
+			// OpenAI 惯例 Authorization: Bearer <key>；Anthropic 惯例 x-api-key: <key>
+			apiKey := r.Header.Get("x-api-key")
+			if !strings.HasPrefix(authz, "Bearer ") {
+				// 无 Bearer 时回退 x-api-key（Anthropic SDK 用法）
+				if apiKey == "" {
+					writeOpenAIError(w, http.StatusUnauthorized, "invalid_api_key", "missing or invalid API key")
+					return
+				}
+				authz = "Bearer " + apiKey
+			}
+			if strings.TrimPrefix(authz, "Bearer ") != key {
 				writeOpenAIError(w, http.StatusUnauthorized, "invalid_api_key", "missing or invalid API key")
 				return
 			}
@@ -529,6 +540,22 @@ func (h *Handler) runtimeForModel(model string) (*Runtime, string, error) {
 		return fallback, model, nil
 	}
 	return nil, "", fmt.Errorf("model %q not found; use explicit prefix: workbuddy/<model> / traework/<model> / qoder/<model>", model)
+}
+
+// runtimeForModelWithFallback 先按原样解析；失败时改用 fallback 模型名重试
+// （Anthropic 客户端常发 claude-* 等模型名，需映射到网关真实模型）。
+func (h *Handler) runtimeForModelWithFallback(model, fallback string) (*Runtime, string, error) {
+	rt, m, err := h.runtimeForModel(model)
+	if err == nil {
+		return rt, m, nil
+	}
+	if fallback != "" && fallback != model {
+		if rt2, m2, err2 := h.runtimeForModel(fallback); err2 == nil {
+			log.Printf("anthropic model %q fallback -> %s", model, m2)
+			return rt2, m2, nil
+		}
+	}
+	return nil, "", err
 }
 
 func rewriteModel(body []byte, model string) ([]byte, error) {

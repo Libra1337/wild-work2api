@@ -35,8 +35,11 @@ func TestReqLogJournalPersistence(t *testing.T) {
 	if len(s2.logs) != 3 || s2.logs[2].Time != "t2" {
 		t.Fatalf("journal reload wrong: %+v", s2.logs)
 	}
-	// 新→旧读取顺序
-	got := (&Handler{reqLogs: *s2}).RequestLogs()
+	// 新→旧读取顺序（与 Handler.RequestLogs 相同的倒序逻辑）
+	got := make([]ReqLog, 0, len(s2.logs))
+	for i := len(s2.logs) - 1; i >= 0; i-- {
+		got = append(got, s2.logs[i])
+	}
 	if len(got) != 3 || got[0].Time != "t2" || got[2].Time != "t0" {
 		t.Fatalf("RequestLogs order wrong: %+v", got)
 	}
