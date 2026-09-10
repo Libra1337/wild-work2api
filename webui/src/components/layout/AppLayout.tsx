@@ -17,7 +17,7 @@ import { buttonVariants } from "@/components/ui/button-variants"
 import { cn } from "@/lib/utils"
 import { useState, useRef, useEffect, type SVGProps } from "react"
 
-const GITHUB_REPO_URL = "https://github.com/Libra1337/Reso"
+const GITHUB_REPO_URL = "https://github.com/Libra1337/Reso2api"
 
 const navItems = [
   { to: "/admin/dashboard", label: "概览", icon: LayoutDashboard },

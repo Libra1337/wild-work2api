@@ -26,8 +26,8 @@ Reso（wild-work2api）是一个自托管的多渠道账号聚合网关：
 ## 快速开始（Docker，推荐）
 
 ```bash
-git clone https://github.com/Libra1337/Reso.git
-cd Reso
+git clone https://github.com/Libra1337/Reso2api.git
+cd Reso2api
 cp config.example.json config.json   # 编辑 api_key（公网部署必须设置）
 docker compose up -d --build
 ```
