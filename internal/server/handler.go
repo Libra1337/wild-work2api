@@ -286,9 +286,29 @@ func (h *Handler) modelList() []map[string]any {
 				entry["max_output_tokens"] = mi.MaxTokens
 			}
 			out = append(out, entry)
+			if v, ok := thinkVariant(entry); ok {
+				out = append(out, v)
+			}
 		}
 	}
 	return out
+}
+
+// thinkVariant 克隆模型条目并追加 @think 后缀。
+// /v1/models 必须列出 @think 变体，中转站（new-api 等）按模型名路由，
+// 列表里没有的名字直接报 "No available upstream provider"，请求到不了网关。
+// auto 路由别名本身不对应具体模型，不生成变体。
+func thinkVariant(entry map[string]any) (map[string]any, bool) {
+	id, _ := entry["id"].(string)
+	if id == "" || strings.HasSuffix(id, "@think") || strings.HasSuffix(id, "/auto") {
+		return nil, false
+	}
+	v := make(map[string]any, len(entry))
+	for k, val := range entry {
+		v[k] = val
+	}
+	v["id"] = id + "@think"
+	return v, true
 }
 
 func (h *Handler) fetchRuntimeModels(rt *Runtime) []provider.ModelInfo {
