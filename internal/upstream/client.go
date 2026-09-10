@@ -251,7 +251,8 @@ func (c *Client) RefreshToken(a *auth.Auth) error {
 // 只有传输层失败才返回 err。
 func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status int, respBody []byte, err error) {
 	url := c.chatBase(a) + "/v2/chat/completions"
-	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(PrepareBodyOptWithEfforts(body, c.SanitizeFingerprints, c.effortsSnapshot())))
+	prepared := PrepareBodyOptWithEfforts(body, c.SanitizeFingerprints, c.effortsSnapshot())
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(prepared))
 	if err != nil {
 		return nil, 0, nil, err
 	}
@@ -267,6 +268,10 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status
 		kind := Classify(resp.StatusCode, string(raw))
 		log.Printf("chat_stream uid=%s: upstream %d %s body=%s",
 			a.UID, resp.StatusCode, kind, truncate(string(raw), 200))
+		// 诊断：安全策略命中时记录脱敏后仍被拦的载荷片段（定位未知新指纹）
+		if strings.Contains(string(raw), "11128") {
+			log.Printf("11128 payload snippet uid=%s: %.400s", a.UID, prepared)
+		}
 		return nil, resp.StatusCode, raw, nil
 	}
 	return resp.Body, resp.StatusCode, nil, nil
