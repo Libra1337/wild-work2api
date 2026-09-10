@@ -34,5 +34,12 @@
   </head>
   <body>
     <div id="root"></div>
+    <script>
+      window.__errs = []
+      window.addEventListener("error", (e) =>
+        window.__errs.push(`${e.message} @${e.lineno}:${e.colno}`))
+      window.addEventListener("unhandledrejection", (e) =>
+        window.__errs.push(`promise: ${e.reason}`))
+    </script>
   </body>
 </html>
