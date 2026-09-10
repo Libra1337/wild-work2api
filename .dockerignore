@@ -1,0 +1,7 @@
+.git
+webui/node_modules
+webui/dist
+auths
+data
+config.json
+*.log

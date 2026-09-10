@@ -3,11 +3,10 @@
 # ── 前端：Vite 构建 Web 控制台静态产物 ──────────────────────
 FROM node:22-alpine AS webui
 WORKDIR /webui
-RUN corepack enable
 COPY webui/package.json ./
-RUN pnpm install --no-frozen-lockfile
+RUN npm install --no-audit --no-fund
 COPY webui/ ./
-RUN pnpm build
+RUN npm run build
 
 # ── 后端：Go 编译（web 产物注入 go:embed）──────────────────
 FROM golang:1.25-alpine AS build
