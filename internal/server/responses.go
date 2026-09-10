@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // respInputItem Responses input 数组元素（宽松解析，未知类型跳过）。
@@ -243,9 +244,11 @@ func writeResponsesError(w http.ResponseWriter, status int, msg string) {
 }
 
 // responsesRelay 把上游 chat SSE 翻译为 Responses 事件流（stream=true）或
-// 聚合为单个 response JSON（stream=false）。
-func (h *Handler) responsesRelay(w http.ResponseWriter, rc io.ReadCloser, model string, stream bool) {
+// 聚合为单个 response JSON（stream=false）。返回 usage 与首事件耗时（TTFB）。
+func (h *Handler) responsesRelay(w http.ResponseWriter, rc io.ReadCloser, model string, stream bool) (map[string]any, time.Duration) {
 	respID := "resp_" + randHex(12)
+	t0 := time.Now()
+	var ttfb time.Duration
 
 	var text strings.Builder
 	type fnCall struct {
@@ -278,6 +281,9 @@ func (h *Handler) responsesRelay(w http.ResponseWriter, rc io.ReadCloser, model 
 		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", evtType, data)
 		if f, ok := w.(http.Flusher); ok {
 			f.Flush()
+		}
+		if ttfb == 0 {
+			ttfb = time.Since(t0)
 		}
 	}
 	respEnvelope := func(status string, output []any) map[string]any {
@@ -452,7 +458,7 @@ func (h *Handler) responsesRelay(w http.ResponseWriter, rc io.ReadCloser, model 
 	if !stream {
 		// 非流式：聚合为单个 response JSON
 		writeJSONRaw(w, http.StatusOK, respEnvelope("completed", output))
-		return
+		return usage, 0
 	}
 
 	// 收尾事件（与 output 数组同序同位）
@@ -484,10 +490,12 @@ func (h *Handler) responsesRelay(w http.ResponseWriter, rc io.ReadCloser, model 
 	emit("response.completed", map[string]any{
 		"response": respEnvelope("completed", output),
 	})
+	return usage, ttfb
 }
 
 // responses 处理 POST /v1/responses。
 func (h *Handler) responses(w http.ResponseWriter, r *http.Request) {
+	t0 := time.Now()
 	raw, err := io.ReadAll(io.LimitReader(r.Body, 16<<20))
 	if err != nil {
 		writeResponsesError(w, http.StatusBadRequest, "read body: "+err.Error())
@@ -516,12 +524,13 @@ func (h *Handler) responses(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = rt
 
-	rc, ok := h.dispatchChat(rt, chatBody, w)
+	rc, uid, ok := h.dispatchChat(rt, chatBody, w)
 	if !ok {
 		return // dispatchChat 已写错误响应
 	}
 	defer rc.Close()
-	h.responsesRelay(w, rc, model, wantStream.Stream)
+	usage, ttfb := h.responsesRelay(w, rc, model, wantStream.Stream)
+	h.finishReqLog(t0, model, rt.Kind.String(), uid, http.StatusOK, wantStream.Stream, ttfb, usage)
 }
 
 func randHex(n int) string {

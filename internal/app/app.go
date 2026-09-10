@@ -1084,6 +1084,13 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 		writeJSON(w, http.StatusOK, a.FeesInfo())
 		go a.safeGo(func() { a.RefreshPricing() })
 	})
+	inner.HandleFunc("GET /api/request_logs", func(w http.ResponseWriter, r *http.Request) {
+		if a.handler != nil {
+			writeJSON(w, http.StatusOK, map[string]any{"logs": a.handler.RequestLogs()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"logs": []any{}})
+	})
 	inner.HandleFunc("GET /api/logs", func(w http.ResponseWriter, r *http.Request) {
 		fp := filepath.Join(filepath.Dir(a.cfg.StateFile), "app.log")
 		raw, _ := os.ReadFile(fp)

@@ -4,6 +4,7 @@ import LoginPage from "@/pages/LoginPage"
 import DashboardPage from "@/pages/DashboardPage"
 import AccountsPage from "@/pages/AccountsPage"
 import ApiPage from "@/pages/ApiPage"
+import RequestLogsPage from "@/pages/RequestLogsPage"
 import LogsPage from "@/pages/LogsPage"
 
 function NotFoundPage() {
@@ -26,6 +27,7 @@ export default function App() {
           <Route path="dashboard" element={<DashboardPage />} />
           <Route path="token" element={<AccountsPage />} />
           <Route path="keys" element={<ApiPage />} />
+          <Route path="reqlog" element={<RequestLogsPage />} />
           <Route path="logs" element={<LogsPage />} />
         </Route>
         <Route path="*" element={<NotFoundPage />} />

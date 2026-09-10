@@ -270,7 +270,7 @@ func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status
 			a.UID, resp.StatusCode, kind, truncate(string(raw), 200))
 		// 诊断：安全策略命中时记录脱敏后仍被拦的载荷片段（定位未知新指纹）
 		if strings.Contains(string(raw), "11128") {
-			log.Printf("11128 payload snippet uid=%s: %.400s", a.UID, prepared)
+			log.Printf("11128 payload snippet uid=%s: %.8000s", a.UID, prepared)
 		}
 		return nil, resp.StatusCode, raw, nil
 	}

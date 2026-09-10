@@ -71,6 +71,7 @@ type Handler struct {
 	apiMu    sync.RWMutex // 保护 cfg.APIKey（面板可运行时修改）
 	stickyMu sync.RWMutex
 	sticky   map[string]*stickyEntry // runtimeKind → stickyEntry
+	reqLogs  reqLogStore             // 请求级日志（环形）
 }
 
 func NewHandler(cfg Config) *Handler {
@@ -342,26 +343,34 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rc, ok := h.dispatchChat(rt, body, w)
+	rc, uid, ok := h.dispatchChat(rt, body, w)
 	if !ok {
 		return
 	}
 	defer rc.Close()
+	t0 := time.Now()
+	fbw := newFirstByteWriter(w, t0)
 	if peek.Stream {
-		_ = rt.Upstream.Stream(w, rc)
+		tee := &usageTee{}
+		err := rt.Upstream.Stream(fbw, &teeReadCloser{rc: rc, w: tee})
+		h.finishReqLog(t0, peek.Model, rt.Kind.String(), uid, http.StatusOK, true, fbw.ttfb(), tee.snapshot())
+		_ = err
 		return
 	}
 	resp, err := rt.Upstream.Aggregate(rc)
 	if err != nil {
-		writeOpenAIError(w, http.StatusBadGateway, "upstream_parse", err.Error())
+		writeOpenAIError(fbw, http.StatusBadGateway, "upstream_parse", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, resp)
+	usage, _ := resp["usage"].(map[string]any)
+	h.finishReqLog(t0, peek.Model, rt.Kind.String(), uid, http.StatusOK, false, 0, usage)
+	writeJSON(fbw, http.StatusOK, resp)
 }
 
 // dispatchChat 选号（粘性/刷新/换号重试）并打开上游流。
-// 失败路径自行把错误响应写入 w 并返回 ok=false；成功返回需调用方 Close 的 rc。
-func (h *Handler) dispatchChat(rt *Runtime, body []byte, w http.ResponseWriter) (io.ReadCloser, bool) {
+// 失败路径自行把错误响应写入 w 并返回 ok=false；
+// 成功返回需调用方 Close 的 rc 与命中账号 uid。
+func (h *Handler) dispatchChat(rt *Runtime, body []byte, w http.ResponseWriter) (io.ReadCloser, string, bool) {
 	tried := map[string]bool{}
 	var lastErr error
 	for i := 0; i < h.cfg.MaxRotate; i++ {
@@ -423,18 +432,18 @@ func (h *Handler) dispatchChat(rt *Runtime, body []byte, w http.ResponseWriter) 
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(status)
 			_, _ = w.Write(respBody)
-			return nil, false
+			return nil, "", false
 		}
 		rt.Pool.NoteSuccess(acct.UID)
 		h.stickySuccess(rt)
-		return rc, true
+		return rc, acct.UID, true
 	}
 	msg := "all accounts unavailable (cooling/disabled)"
 	if lastErr != nil {
 		msg += ": " + lastErr.Error()
 	}
 	writeOpenAIError(w, http.StatusServiceUnavailable, "no_healthy_account", msg)
-	return nil, false
+	return nil, "", false
 }
 
 func (h *Handler) runtimeForModel(model string) (*Runtime, string, error) {

@@ -118,4 +118,7 @@ export const api = {
     request<import("@/types").SimpleResult>("/fees/refresh", {}),
 
   logs: () => request<import("@/types").LogsData>("/logs"),
+
+  requestLogs: () =>
+    request<{ logs: import("@/types").ReqLog[] }>("/request_logs"),
 }

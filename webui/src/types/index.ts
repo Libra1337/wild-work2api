@@ -83,6 +83,21 @@ export interface LogsData {
   lines: string[]
 }
 
+export interface ReqLog {
+  time: string
+  model: string
+  channel: string
+  uid: string
+  status: number
+  stream: boolean
+  ttfb_ms: number
+  total_ms: number
+  in_tokens: number
+  out_tokens: number
+  cached_tokens: number
+  credit: number
+}
+
 export interface ResourceDetail {
   remain: number
   items: {
