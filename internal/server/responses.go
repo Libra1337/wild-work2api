@@ -249,19 +249,25 @@ func (h *Handler) responsesRelay(w http.ResponseWriter, rc io.ReadCloser, model 
 
 	var text strings.Builder
 	type fnCall struct {
-		ItemID    string
-		CallID    string
-		Name      string
-		Args      strings.Builder
-		Announced bool
+		ItemID string
+		CallID string
+		Name   string
+		Args   strings.Builder
+		Idx    int
 	}
 	var fnCalls map[int]*fnCall
-	var fnOrder []*fnCall
 	var usage map[string]any
 
-	itemIndex := 0
+	// order 按上游实际宣告顺序登记 output 项，保证事件 output_index 与
+	// completed 数组一致（模型可能先出 function_call 再出文本，或反之）。
+	type outItem struct {
+		isMsg bool
+		fn    *fnCall
+	}
+	var order []*outItem
 	msgItemID := "msg_0"
-	msgOpened := false
+	msgIdx := -1
+	nextIdx := 0
 	seq := 0
 
 	emit := func(evtType string, payload map[string]any) {
@@ -335,23 +341,31 @@ func (h *Handler) responsesRelay(w http.ResponseWriter, rc io.ReadCloser, model 
 		delta := chunk.Choices[0].Delta
 
 		if delta.Content != "" {
-			if stream && !msgOpened {
-				msgOpened = true
+			if stream && msgIdx < 0 {
+				msgIdx = nextIdx
+				nextIdx++
+				order = append(order, &outItem{isMsg: true})
 				emit("response.output_item.added", map[string]any{
-					"output_index": itemIndex,
+					"output_index": msgIdx,
 					"item": map[string]any{
 						"type": "message", "id": msgItemID, "role": "assistant",
 						"status": "in_progress", "content": []any{},
 					},
 				})
 				emit("response.content_part.added", map[string]any{
-					"item_id": msgItemID, "output_index": itemIndex, "content_index": 0,
+					"item_id": msgItemID, "output_index": msgIdx, "content_index": 0,
 					"part": map[string]any{"type": "output_text", "text": ""},
 				})
 			}
+			if msgIdx < 0 {
+				// 非流式也可能未开 msg；补登记
+				msgIdx = nextIdx
+				nextIdx++
+				order = append(order, &outItem{isMsg: true})
+			}
 			if stream {
 				emit("response.output_text.delta", map[string]any{
-					"item_id": msgItemID, "output_index": itemIndex, "content_index": 0,
+					"item_id": msgItemID, "output_index": msgIdx, "content_index": 0,
 					"delta": delta.Content,
 				})
 			}
@@ -368,9 +382,8 @@ func (h *Handler) responsesRelay(w http.ResponseWriter, rc io.ReadCloser, model 
 			}
 			call, ok := fnCalls[idx]
 			if !ok {
-				call = &fnCall{ItemID: fmt.Sprintf("fc_%d", idx)}
+				call = &fnCall{ItemID: fmt.Sprintf("fc_%d", idx), Idx: -1}
 				fnCalls[idx] = call
-				fnOrder = append(fnOrder, call)
 			}
 			if tc.ID != "" {
 				call.CallID = tc.ID
@@ -378,9 +391,10 @@ func (h *Handler) responsesRelay(w http.ResponseWriter, rc io.ReadCloser, model 
 			if tc.Function.Name != "" {
 				call.Name = tc.Function.Name
 			}
-			if !call.Announced {
-				call.Announced = true
-				itemIndex++
+			if call.Idx < 0 {
+				call.Idx = nextIdx
+				nextIdx++
+				order = append(order, &outItem{fn: call})
 				if stream {
 					callID := call.CallID
 					if callID == "" {
@@ -388,7 +402,7 @@ func (h *Handler) responsesRelay(w http.ResponseWriter, rc io.ReadCloser, model 
 						call.CallID = callID
 					}
 					emit("response.output_item.added", map[string]any{
-						"output_index": itemIndex,
+						"output_index": call.Idx,
 						"item": map[string]any{
 							"type": "function_call", "id": call.ItemID, "call_id": callID,
 							"name": call.Name, "arguments": "", "status": "in_progress",
@@ -399,7 +413,7 @@ func (h *Handler) responsesRelay(w http.ResponseWriter, rc io.ReadCloser, model 
 			if tc.Function.Arguments != "" {
 				if stream {
 					emit("response.function_call_arguments.delta", map[string]any{
-						"item_id": call.ItemID, "output_index": itemIndex,
+						"item_id": call.ItemID, "output_index": call.Idx,
 						"delta": tc.Function.Arguments,
 					})
 				}
@@ -408,24 +422,31 @@ func (h *Handler) responsesRelay(w http.ResponseWriter, rc io.ReadCloser, model 
 		}
 	}
 
-	// 组装最终 output
-	output := make([]any, 0, 2)
-	if text.Len() > 0 || msgOpened {
-		full := text.String()
-		output = append(output, map[string]any{
-			"type": "message", "id": msgItemID, "role": "assistant", "status": "completed",
-			"content": []any{map[string]any{"type": "output_text", "text": full}},
-		})
-	}
-	for _, call := range fnOrder {
+	// 按宣告顺序组装最终 output
+	fnPayload := func(call *fnCall) map[string]any {
 		callID := call.CallID
 		if callID == "" {
 			callID = "call_" + call.ItemID
+			call.CallID = callID
 		}
-		output = append(output, map[string]any{
+		return map[string]any{
 			"type": "function_call", "id": call.ItemID, "call_id": callID,
 			"name": call.Name, "arguments": call.Args.String(), "status": "completed",
-		})
+		}
+	}
+	msgPayload := func() map[string]any {
+		return map[string]any{
+			"type": "message", "id": msgItemID, "role": "assistant", "status": "completed",
+			"content": []any{map[string]any{"type": "output_text", "text": text.String()}},
+		}
+	}
+	output := make([]any, 0, len(order))
+	for _, it := range order {
+		if it.isMsg {
+			output = append(output, msgPayload())
+		} else {
+			output = append(output, fnPayload(it.fn))
+		}
 	}
 
 	if !stream {
@@ -434,35 +455,31 @@ func (h *Handler) responsesRelay(w http.ResponseWriter, rc io.ReadCloser, model 
 		return
 	}
 
-	// 收尾事件
-	if msgOpened {
-		full := text.String()
-		emit("response.output_text.done", map[string]any{
-			"item_id": msgItemID, "output_index": 0, "content_index": 0, "text": full,
-		})
-		emit("response.content_part.done", map[string]any{
-			"item_id": msgItemID, "output_index": 0, "content_index": 0,
-			"part": map[string]any{"type": "output_text", "text": full},
-		})
-		emit("response.output_item.done", map[string]any{
-			"output_index": 0,
-			"item":         output[0],
-		})
-	}
-	fnBase := 0
-	if msgOpened {
-		fnBase = 1
-	}
-	for i, call := range fnOrder {
-		_ = call
-		emit("response.function_call_arguments.done", map[string]any{
-			"item_id": fnOrder[i].ItemID, "output_index": fnBase + i,
-			"arguments": fnOrder[i].Args.String(),
-		})
-		emit("response.output_item.done", map[string]any{
-			"output_index": fnBase + i,
-			"item":         output[fnBase+i],
-		})
+	// 收尾事件（与 output 数组同序同位）
+	for i, it := range order {
+		if it.isMsg {
+			full := text.String()
+			emit("response.output_text.done", map[string]any{
+				"item_id": msgItemID, "output_index": i, "content_index": 0, "text": full,
+			})
+			emit("response.content_part.done", map[string]any{
+				"item_id": msgItemID, "output_index": i, "content_index": 0,
+				"part": map[string]any{"type": "output_text", "text": full},
+			})
+			emit("response.output_item.done", map[string]any{
+				"output_index": i,
+				"item":         output[i],
+			})
+		} else {
+			emit("response.function_call_arguments.done", map[string]any{
+				"item_id": it.fn.ItemID, "output_index": i,
+				"arguments": it.fn.Args.String(),
+			})
+			emit("response.output_item.done", map[string]any{
+				"output_index": i,
+				"item":         output[i],
+			})
+		}
 	}
 	emit("response.completed", map[string]any{
 		"response": respEnvelope("completed", output),
