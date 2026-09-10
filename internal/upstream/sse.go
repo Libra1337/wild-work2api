@@ -304,6 +304,8 @@ func cleanToolCallFragments(v any) []map[string]any {
 }
 
 // Stream 逐行读取上游 SSE，经白名单重建后转发；保证恰好一个 [DONE]。
+// 上游中途死亡（读错误 / 未发 finish_reason 与 [DONE] 就 EOF）时，
+// 补写 error 帧 + [DONE] 让客户端优雅收尾（可自动重试），不裸断连接。
 func Stream(w http.ResponseWriter, r io.Reader) error {
 	h := w.Header()
 	h.Set("Content-Type", "text/event-stream")
@@ -313,6 +315,7 @@ func Stream(w http.ResponseWriter, r io.Reader) error {
 	fl, _ := w.(http.Flusher)
 	br := bufio.NewReaderSize(r, 64*1024)
 	sawDone := false
+	sawFinish := false
 	rb := &chunkRebuilder{}
 	write := func(payload string) error {
 		if _, werr := io.WriteString(w, payload); werr != nil {
@@ -322,6 +325,21 @@ func Stream(w http.ResponseWriter, r io.Reader) error {
 			fl.Flush()
 		}
 		return nil
+	}
+	writeTerminal := func(reason string) error {
+		if sawDone {
+			return nil
+		}
+		errFrame := map[string]any{
+			"error": map[string]any{
+				"type":    "upstream_stream_ended",
+				"message": reason,
+			},
+		}
+		if raw, merr := json.Marshal(errFrame); merr == nil {
+			_ = write("data: " + string(raw) + "\n\n")
+		}
+		return write("data: [DONE]\n\n")
 	}
 	for {
 		line, err := br.ReadString('\n')
@@ -339,6 +357,9 @@ func Stream(w http.ResponseWriter, r io.Reader) error {
 				var chunk map[string]any
 				if json.Unmarshal([]byte(payload), &chunk) == nil {
 					if rebuilt := rb.rebuild(chunk); rebuilt != nil {
+						if hasFinishReason(rebuilt) {
+							sawFinish = true
+						}
 						raw, merr := json.Marshal(rebuilt)
 						if merr == nil {
 							if werr := write("data: " + string(raw) + "\n\n"); werr != nil {
@@ -363,13 +384,36 @@ func Stream(w http.ResponseWriter, r io.Reader) error {
 			if err == io.EOF {
 				break
 			}
+			// 传输层错误：上游中途死亡 → 补终止帧（客户端还能拿到已生成内容）
+			_ = writeTerminal("upstream stream aborted: " + err.Error())
 			return err
 		}
 	}
 	if !sawDone {
-		if err := write("data: [DONE]\n\n"); err != nil {
-			return err
+		if sawFinish {
+			// 正常收尾但上游漏发 [DONE]：补写
+			if werr := write("data: [DONE]\n\n"); werr != nil {
+				return werr
+			}
+		} else {
+			// EOF 且未见 finish_reason：模型未完成就断 → error 帧 + [DONE]
+			if werr := writeTerminal("upstream stream ended before completion"); werr != nil {
+				return werr
+			}
 		}
 	}
 	return nil
+}
+
+// hasFinishReason 判断重建后的 chunk 是否携带 finish_reason。
+func hasFinishReason(chunk map[string]any) bool {
+	choices, _ := chunk["choices"].([]any)
+	for _, ci := range choices {
+		if c, ok := ci.(map[string]any); ok {
+			if _, ok := c["finish_reason"]; ok {
+				return true
+			}
+		}
+	}
+	return false
 }

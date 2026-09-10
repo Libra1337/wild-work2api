@@ -258,9 +258,10 @@ export default function RequestLogsPage() {
       ) : (
         <Card className="border-border/60 shadow-sm">
           <CardContent className="p-0">
+            <div className="max-h-[calc(100dvh-230px)] min-h-80 overflow-auto">
             <Table>
               <TableHeader>
-                <TableRow>
+                <TableRow className="sticky top-0 z-10 bg-card hover:bg-card">
                   <TableHead>时间</TableHead>
                   <TableHead>模型</TableHead>
                   <TableHead>渠道</TableHead>
@@ -350,6 +351,7 @@ export default function RequestLogsPage() {
                 })}
               </TableBody>
             </Table>
+            </div>
           </CardContent>
         </Card>
       )}
