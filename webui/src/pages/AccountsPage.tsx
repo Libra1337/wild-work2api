@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react"
 import {
   CalendarCheck2,
+  CheckCircle2,
   Coins,
   ExternalLink,
   FileJson,
@@ -10,16 +11,17 @@ import {
   Plus,
   RefreshCw,
   Trash2,
+  XCircle,
 } from "lucide-react"
 
 import { api } from "@/lib/api-client"
 import type {
   AppState,
   CheckinAllResult,
-  ImportResult,
   RefreshAllResult,
   ResourceDetail,
 } from "@/types"
+import { cn } from "@/lib/utils"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -245,37 +247,100 @@ function AddAccountDialog({ onDone }: { onDone: () => void }) {
   )
 }
 
+interface ImportItem {
+  name: string
+  status: "pending" | "importing" | "ok" | "error"
+  detail?: string
+}
+
 function ImportDialog({ onDone }: { onDone: () => void }) {
   const [open, setOpen] = useState(false)
   const [raw, setRaw] = useState("")
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [result, setResult] = useState<ImportResult | null>(null)
-
-  const handleSave = async () => {
-    if (!raw.trim()) return
-    setSaving(true)
-    setError(null)
-    try {
-      const r = await api.accountImport(raw.trim())
-      if (!r.ok) throw new Error(r.error || "导入失败")
-      setResult(r)
-      setRaw("")
-      onDone()
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "导入失败"
-      setError(msg)
-    } finally {
-      setSaving(false)
-    }
-  }
+  const [items, setItems] = useState<ImportItem[]>([])
+  const [busy, setBusy] = useState(false)
+  const [dragOver, setDragOver] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   const handleOpenChange = (next: boolean) => {
     if (!next) {
-      setError(null)
-      setResult(null)
+      setRaw("")
+      setItems([])
     }
     setOpen(next)
+  }
+
+  const patchItem = (index: number, patch: Partial<ImportItem>) => {
+    setItems((current) =>
+      current.map((it, idx) => (idx === index ? { ...it, ...patch } : it)),
+    )
+  }
+
+  const runImports = async (entries: { name: string; content: string }[]) => {
+    setBusy(true)
+    setItems(entries.map((entry) => ({ name: entry.name, status: "pending" })))
+    let anyOk = false
+    for (let i = 0; i < entries.length; i++) {
+      patchItem(i, { status: "importing" })
+      try {
+        const r = await api.accountImport(entries[i].content)
+        if (r.ok) {
+          anyOk = true
+          patchItem(i, {
+            status: "ok",
+            detail: r.nickname || r.uid?.slice(0, 8) || "已导入",
+          })
+        } else {
+          patchItem(i, { status: "error", detail: r.error || "导入失败" })
+        }
+      } catch (err: unknown) {
+        patchItem(i, {
+          status: "error",
+          detail: err instanceof Error ? err.message : "导入失败",
+        })
+      }
+    }
+    setBusy(false)
+    if (anyOk) onDone()
+  }
+
+  const handleFiles = async (files: FileList | File[]) => {
+    const arr = Array.from(files).filter(
+      (f) => f.name.toLowerCase().endsWith(".json") || f.type === "application/json",
+    )
+    if (arr.length === 0) {
+      setItems([
+        { name: "（未选择 JSON 文件）", status: "error", detail: "仅支持 .json 文件" },
+      ])
+      return
+    }
+    const entries = await Promise.all(
+      arr.map(async (f) => ({
+        name: f.name,
+        content: (await f.text()).replace(/^\uFEFF/, ""),
+      })),
+    )
+    await runImports(entries)
+  }
+
+  const handlePasteImport = async () => {
+    const text = raw.trim().replace(/^\uFEFF/, "")
+    if (!text) return
+    let entries: { name: string; content: string }[]
+    try {
+      const parsed: unknown = JSON.parse(text)
+      if (Array.isArray(parsed)) {
+        entries = parsed.map((obj, i) => ({
+          name: `粘贴 #${i + 1}`,
+          content: JSON.stringify(obj),
+        }))
+      } else {
+        entries = [{ name: "粘贴的 JSON", content: text }]
+      }
+    } catch {
+      // 交给后端给出精确的解析错误
+      entries = [{ name: "粘贴的 JSON", content: text }]
+    }
+    await runImports(entries)
   }
 
   return (
@@ -291,39 +356,114 @@ function ImportDialog({ onDone }: { onDone: () => void }) {
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>导入账号凭证</DialogTitle>
+          <DialogDescription>
+            支持 workbuddy-desktop 导出的 JSON，可多文件批量导入
+          </DialogDescription>
         </DialogHeader>
         <div className="space-y-3">
-          {error && (
-            <Alert variant="destructive">
-              <AlertDescription>{error}</AlertDescription>
-            </Alert>
-          )}
-          {result && result.ok && (
-            <Alert>
-              <AlertDescription>
-                已导入 {result.nickname || result.uid?.slice(0, 8)}
-                （可继续粘贴下一个）
-              </AlertDescription>
-            </Alert>
-          )}
-          <div className="grid gap-2">
-            <label className="text-xs text-muted-foreground">
-              粘贴 workbuddy-desktop 导出的 JSON（支持整个文件内容）
-            </label>
-            <Textarea
-              placeholder='{"account": {"uid": "..."}, "auth": {"accessToken": "..."}}'
-              value={raw}
-              onChange={(event) => setRaw(event.target.value)}
-              rows={8}
-              className="font-mono text-xs"
-            />
+          <div
+            role="button"
+            tabIndex={0}
+            aria-label="选择或拖拽 JSON 文件"
+            onClick={() => fileInputRef.current?.click()}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") fileInputRef.current?.click()
+            }}
+            onDragOver={(e) => {
+              e.preventDefault()
+              setDragOver(true)
+            }}
+            onDragLeave={() => setDragOver(false)}
+            onDrop={(e) => {
+              e.preventDefault()
+              setDragOver(false)
+              if (!busy) void handleFiles(e.dataTransfer.files)
+            }}
+            className={cn(
+              "flex cursor-pointer select-none flex-col items-center gap-2 rounded-lg border border-dashed px-4 py-8 text-center transition-colors",
+              dragOver
+                ? "border-primary bg-primary/5"
+                : "border-border hover:bg-muted/40",
+            )}
+          >
+            <FileJson className="size-7 text-muted-foreground" />
+            <p className="text-sm font-medium">点击选择文件，或拖拽到此处</p>
+            <p className="text-xs text-muted-foreground">
+              支持一次选择多个 JSON 文件
+            </p>
           </div>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".json,application/json"
+            multiple
+            className="hidden"
+            onChange={(e) => {
+              if (e.target.files && e.target.files.length > 0) {
+                void handleFiles(e.target.files)
+              }
+              e.target.value = ""
+            }}
+          />
+
+          {items.length > 0 && (
+            <div className="max-h-44 space-y-1.5 overflow-auto pr-1">
+              {items.map((item, index) => (
+                <div
+                  key={index}
+                  className="flex items-center gap-2 rounded-md border border-border/60 bg-muted/25 px-2.5 py-1.5 text-xs"
+                >
+                  {item.status === "importing" && (
+                    <LoaderCircle className="size-3.5 shrink-0 animate-spin text-primary" />
+                  )}
+                  {item.status === "ok" && (
+                    <CheckCircle2 className="size-3.5 shrink-0 text-success" />
+                  )}
+                  {item.status === "error" && (
+                    <XCircle className="size-3.5 shrink-0 text-destructive" />
+                  )}
+                  {item.status === "pending" && (
+                    <FileJson className="size-3.5 shrink-0 text-muted-foreground" />
+                  )}
+                  <span className="min-w-0 flex-1 truncate font-mono">
+                    {item.name}
+                  </span>
+                  {item.status === "ok" && item.detail && (
+                    <span className="shrink-0 text-muted-foreground">
+                      {item.detail}
+                    </span>
+                  )}
+                  {item.status === "error" && item.detail && (
+                    <span className="max-w-45 shrink-0 truncate text-destructive">
+                      {item.detail}
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+            <span className="h-px flex-1 bg-border" />
+            或粘贴 JSON
+            <span className="h-px flex-1 bg-border" />
+          </div>
+          <Textarea
+            placeholder='单个 {"account":...} 或数组 [{...},{...}]'
+            value={raw}
+            onChange={(event) => setRaw(event.target.value)}
+            rows={3}
+            className="font-mono text-xs"
+          />
         </div>
         <DialogFooter>
           <DialogClose render={<Button variant="outline" />}>关闭</DialogClose>
-          <Button onClick={handleSave} disabled={saving || !raw.trim()}>
-            {saving ? <LoadingSpinner size={16} className="mr-2" /> : null}
-            导入
+          <Button
+            onClick={() => void handlePasteImport()}
+            disabled={busy || !raw.trim()}
+          >
+            {busy ? <LoadingSpinner size={16} className="mr-2" /> : null}
+            导入粘贴内容
           </Button>
         </DialogFooter>
       </DialogContent>
