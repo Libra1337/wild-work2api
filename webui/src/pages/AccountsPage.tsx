@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react"
 import {
   CalendarCheck2,
   CheckCircle2,
+  Coins,
   ExternalLink,
   FileJson,
   LoaderCircle,
@@ -9,12 +10,17 @@ import {
   PlayCircle,
   Plus,
   RefreshCw,
-  Coins,
   Trash2,
 } from "lucide-react"
 
 import { api } from "@/lib/api-client"
-import type { AppState, ImportResult, ResourceDetail } from "@/types"
+import type {
+  AppState,
+  CheckinAllResult,
+  ImportResult,
+  RefreshAllResult,
+  ResourceDetail,
+} from "@/types"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -23,6 +29,7 @@ import { Textarea } from "@/components/ui/textarea"
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
   DialogTrigger,
@@ -325,18 +332,151 @@ function ImportDialog({ onDone }: { onDone: () => void }) {
   )
 }
 
+interface DetailView {
+  account: string
+  channel: string
+  uid: string
+}
+
+function CreditDetailDialog({
+  view,
+  onClose,
+}: {
+  view: DetailView | null
+  onClose: () => void
+}) {
+  const [data, setData] = useState<ResourceDetail | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!view) {
+      setData(null)
+      setError(null)
+      return
+    }
+    let cancelled = false
+    setLoading(true)
+    setError(null)
+    setData(null)
+    api
+      .accountResourceDetail(view.uid)
+      .then((r) => {
+        if (!cancelled) setData(r)
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : "加载失败")
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [view])
+
+  return (
+    <Dialog open={view !== null} onOpenChange={(next) => !next && onClose()}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            积分明细
+            {view && (
+              <span className="truncate text-sm font-normal text-muted-foreground">
+                {view.account}
+              </span>
+            )}
+          </DialogTitle>
+          {view && (
+            <DialogDescription>
+              {CHANNEL_LABEL[view.channel] ?? view.channel} ·{" "}
+              <span className="font-mono">{view.uid.slice(0, 8)}</span>
+            </DialogDescription>
+          )}
+        </DialogHeader>
+
+        {loading ? (
+          <div className="space-y-3">
+            <Skeleton className="h-16 w-full" />
+            <Skeleton className="h-14 w-full" />
+            <Skeleton className="h-14 w-full" />
+          </div>
+        ) : error ? (
+          <Alert variant="destructive">
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
+        ) : data ? (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between rounded-lg border border-border/60 bg-muted/25 px-3 py-2.5">
+              <div>
+                <p className="text-[11px] text-muted-foreground">总剩余积分</p>
+                <p className="mt-0.5 font-mono text-2xl font-bold tracking-tight text-primary">
+                  {(data.remain ?? 0).toLocaleString()}
+                </p>
+              </div>
+              <div className="flex size-9 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                <Coins className="size-4.5" />
+              </div>
+            </div>
+
+            <div className="max-h-80 space-y-2 overflow-auto pr-1">
+              {data.items.length === 0 ? (
+                <div className="rounded-lg border border-dashed border-border px-4 py-8 text-center text-sm text-muted-foreground">
+                  暂无套餐明细
+                </div>
+              ) : (
+                data.items.map((item, index) => {
+                  const total = Math.max(item.total, item.used + item.remain, 1)
+                  const usedPercent = Math.min(
+                    Math.round((item.used / total) * 100),
+                    100,
+                  )
+                  return (
+                    <div
+                      key={`${item.name}-${index}`}
+                      className="rounded-lg border border-border/60 bg-muted/25 px-3 py-2.5"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="min-w-0 truncate text-[13px] font-medium">
+                          {item.name}
+                        </p>
+                        <span className="shrink-0 font-mono text-xs font-semibold text-primary">
+                          剩余 {item.remain.toLocaleString()}
+                        </span>
+                      </div>
+                      <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-muted">
+                        <div
+                          className="h-full rounded-full bg-primary/70"
+                          style={{ width: `${usedPercent}%` }}
+                        />
+                      </div>
+                      <div className="mt-1 flex items-center justify-between font-mono text-[11px] text-muted-foreground">
+                        <span>已用 {item.used.toLocaleString()}</span>
+                        <span>总量 {item.total.toLocaleString()}</span>
+                      </div>
+                    </div>
+                  )
+                })
+              )}
+            </div>
+          </div>
+        ) : null}
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 export default function AccountsPage() {
   const [accounts, setAccounts] = useState<AppState["accounts"]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [busyAccount, setBusyAccount] = useState<string | null>(null)
+  const [batchBusy, setBatchBusy] = useState<"checkin" | "refresh" | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const [actionSuccess, setActionSuccess] = useState<string | null>(null)
-  const [detail, setDetail] = useState<{
-    account: string
-    raw: string
-  } | null>(null)
-  const [detailLoading, setDetailLoading] = useState(false)
+  const [detailView, setDetailView] = useState<DetailView | null>(null)
   const [page, setPage] = useState(1)
 
   const load = useCallback(async () => {
@@ -378,17 +518,30 @@ export default function AccountsPage() {
     }
   }
 
-  const showDetail = async (uid: string, name: string) => {
-    setDetail({ account: name, raw: "加载中…" })
-    setDetailLoading(true)
+  const runBatch = async (kind: "checkin" | "refresh") => {
+    setBatchBusy(kind)
+    setActionError(null)
+    setActionSuccess(null)
     try {
-      const r: ResourceDetail = await api.accountResourceDetail(uid)
-      setDetail({ account: name, raw: JSON.stringify(r, null, 2) })
+      if (kind === "checkin") {
+        const r: CheckinAllResult = await api.accountCheckinAll()
+        const total = r.results?.length ?? 0
+        const ok = r.results?.filter((x) => x.ok).length ?? 0
+        setActionSuccess(
+          `批量签到完成：${ok}/${total} 成功${ok < total ? `，${total - ok} 个失败` : ""}`,
+        )
+      } else {
+        const r: RefreshAllResult = await api.accountRefreshAll()
+        setActionSuccess(
+          `批量刷新完成：${r.ok}/${r.total} 成功${r.failed > 0 ? `，${r.failed} 个失败` : ""}`,
+        )
+      }
+      await load()
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "加载失败"
-      setDetail({ account: name, raw: `加载失败：${msg}` })
+      const msg = err instanceof Error ? err.message : "批量操作失败"
+      setActionError(msg)
     } finally {
-      setDetailLoading(false)
+      setBatchBusy(null)
     }
   }
 
@@ -424,9 +577,37 @@ export default function AccountsPage() {
 
       <Card className="border-border/60 shadow-sm">
         <CardHeader className="pb-3">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             <CardTitle className="text-sm font-medium">账号池</CardTitle>
-            <div className="flex flex-col gap-2 sm:flex-row">
+            <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={batchBusy !== null || total === 0}
+                onClick={() => void runBatch("checkin")}
+                className="h-10 w-full sm:h-7 sm:w-auto"
+              >
+                {batchBusy === "checkin" ? (
+                  <LoadingSpinner size={14} className="mr-1.5" />
+                ) : (
+                  <CalendarCheck2 className="mr-1.5 h-3.5 w-3.5" />
+                )}
+                批量签到
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={batchBusy !== null || total === 0}
+                onClick={() => void runBatch("refresh")}
+                className="h-10 w-full sm:h-7 sm:w-auto"
+              >
+                {batchBusy === "refresh" ? (
+                  <LoadingSpinner size={14} className="mr-1.5" />
+                ) : (
+                  <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
+                )}
+                批量刷新
+              </Button>
               <AddAccountDialog onDone={load} />
               <ImportDialog onDone={load} />
             </div>
@@ -573,12 +754,12 @@ export default function AccountsPage() {
                             variant="outline"
                             size="sm"
                             onClick={() =>
-                              void showDetail(
-                                account.uid,
-                                account.nickname || account.uid.slice(0, 8),
-                              )
+                              setDetailView({
+                                account: account.nickname || account.uid.slice(0, 8),
+                                channel: account.group,
+                                uid: account.uid,
+                              })
                             }
-                            disabled={detailLoading}
                             className="h-10 w-full whitespace-nowrap sm:h-7 sm:w-auto"
                           >
                             <Coins className="mr-1.5 h-3.5 w-3.5" />
@@ -642,21 +823,7 @@ export default function AccountsPage() {
         </CardContent>
       </Card>
 
-      {detail && (
-        <Card className="border-border/60 shadow-sm">
-          <CardHeader className="pb-3">
-            <CardTitle className="flex items-center gap-2 text-sm font-medium">
-              <CheckCircle2 className="size-4" />
-              积分明细 · {detail.account}
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <pre className="max-h-80 overflow-auto rounded-lg bg-muted/60 p-3 text-xs">
-              {detail.raw}
-            </pre>
-          </CardContent>
-        </Card>
-      )}
+      <CreditDetailDialog view={detailView} onClose={() => setDetailView(null)} />
     </div>
   )
 }

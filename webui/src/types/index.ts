@@ -84,5 +84,28 @@ export interface LogsData {
 }
 
 export interface ResourceDetail {
-  [key: string]: unknown
+  remain: number
+  items: {
+    name: string
+    total: number
+    used: number
+    remain: number
+  }[]
+}
+
+export interface CheckinAllResult {
+  results: {
+    uid: string
+    ok: boolean
+    msg?: string
+    remain?: number
+    has_remain?: boolean
+  }[]
+}
+
+export interface RefreshAllResult {
+  busy: boolean
+  total: number
+  ok: number
+  failed: number
 }
