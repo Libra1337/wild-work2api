@@ -250,6 +250,9 @@ func (h *Handler) responsesRelay(w http.ResponseWriter, rc io.ReadCloser, model 
 	var ttfb time.Duration
 
 	var text strings.Builder
+	var reasoning strings.Builder
+	reasoningIdx := -1
+	reasoningItemID := "rs_0"
 	type fnCall struct {
 		ItemID string
 		CallID string
@@ -263,8 +266,9 @@ func (h *Handler) responsesRelay(w http.ResponseWriter, rc io.ReadCloser, model 
 	// order 按上游实际宣告顺序登记 output 项，保证事件 output_index 与
 	// completed 数组一致（模型可能先出 function_call 再出文本，或反之）。
 	type outItem struct {
-		isMsg bool
-		fn    *fnCall
+		isMsg    bool
+		isReason bool
+		fn       *fnCall
 	}
 	var order []*outItem
 	msgItemID := "msg_0"
@@ -322,6 +326,7 @@ func (h *Handler) responsesRelay(w http.ResponseWriter, rc io.ReadCloser, model 
 			Choices []struct {
 				Delta struct {
 					Content   string `json:"content"`
+					Reasoning string `json:"reasoning_content"`
 					ToolCalls []struct {
 						Index    *int   `json:"index"`
 						ID       string `json:"id"`
@@ -344,6 +349,34 @@ func (h *Handler) responsesRelay(w http.ResponseWriter, rc io.ReadCloser, model 
 			continue
 		}
 		delta := chunk.Choices[0].Delta
+
+		// 推理内容 → reasoning_summary 事件（Codex 据此显示思考过程）
+		if delta.Reasoning != "" {
+			if reasoningIdx < 0 {
+				reasoningIdx = nextIdx
+				nextIdx++
+				order = append(order, &outItem{isReason: true})
+				if stream {
+					emit("response.output_item.added", map[string]any{
+						"output_index": reasoningIdx,
+						"item": map[string]any{
+							"type": "reasoning", "id": reasoningItemID, "summary": []any{},
+						},
+					})
+					emit("response.reasoning_summary_part.added", map[string]any{
+						"item_id": reasoningItemID, "output_index": reasoningIdx, "summary_index": 0,
+						"part": map[string]any{"type": "summary_text", "text": ""},
+					})
+				}
+			}
+			if stream {
+				emit("response.reasoning_summary_text.delta", map[string]any{
+					"item_id": reasoningItemID, "output_index": reasoningIdx, "summary_index": 0,
+					"delta": delta.Reasoning,
+				})
+			}
+			reasoning.WriteString(delta.Reasoning)
+		}
 
 		if delta.Content != "" {
 			if stream && msgIdx < 0 {
@@ -445,11 +478,20 @@ func (h *Handler) responsesRelay(w http.ResponseWriter, rc io.ReadCloser, model 
 			"content": []any{map[string]any{"type": "output_text", "text": text.String()}},
 		}
 	}
+	reasoningPayload := func() map[string]any {
+		return map[string]any{
+			"type": "reasoning", "id": reasoningItemID,
+			"summary": []any{map[string]any{"type": "summary_text", "text": reasoning.String()}},
+		}
+	}
 	output := make([]any, 0, len(order))
 	for _, it := range order {
-		if it.isMsg {
+		switch {
+		case it.isReason:
+			output = append(output, reasoningPayload())
+		case it.isMsg:
 			output = append(output, msgPayload())
-		} else {
+		default:
 			output = append(output, fnPayload(it.fn))
 		}
 	}
@@ -462,6 +504,21 @@ func (h *Handler) responsesRelay(w http.ResponseWriter, rc io.ReadCloser, model 
 
 	// 收尾事件（与 output 数组同序同位）
 	for i, it := range order {
+		if it.isReason {
+			full := reasoning.String()
+			emit("response.reasoning_summary_text.done", map[string]any{
+				"item_id": reasoningItemID, "output_index": i, "summary_index": 0, "text": full,
+			})
+			emit("response.reasoning_summary_part.done", map[string]any{
+				"item_id": reasoningItemID, "output_index": i, "summary_index": 0,
+				"part": map[string]any{"type": "summary_text", "text": full},
+			})
+			emit("response.output_item.done", map[string]any{
+				"output_index": i,
+				"item":         output[i],
+			})
+			continue
+		}
 		if it.isMsg {
 			full := text.String()
 			emit("response.output_text.done", map[string]any{
