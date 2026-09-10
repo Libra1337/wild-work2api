@@ -245,9 +245,8 @@ func writeResponsesError(w http.ResponseWriter, status int, msg string) {
 
 // responsesRelay 把上游 chat SSE 翻译为 Responses 事件流（stream=true）或
 // 聚合为单个 response JSON（stream=false）。返回 usage 与首事件耗时（TTFB）。
-func (h *Handler) responsesRelay(w http.ResponseWriter, rc io.ReadCloser, model string, stream bool) (map[string]any, time.Duration) {
+func (h *Handler) responsesRelay(w http.ResponseWriter, rc io.ReadCloser, model string, stream bool, t0 time.Time) (map[string]any, time.Duration) {
 	respID := "resp_" + randHex(12)
-	t0 := time.Now()
 	var ttfb time.Duration
 
 	var text strings.Builder
@@ -529,7 +528,7 @@ func (h *Handler) responses(w http.ResponseWriter, r *http.Request) {
 		return // dispatchChat 已写错误响应
 	}
 	defer rc.Close()
-	usage, ttfb := h.responsesRelay(w, rc, model, wantStream.Stream)
+	usage, ttfb := h.responsesRelay(w, rc, model, wantStream.Stream, t0)
 	h.finishReqLog(t0, model, rt.Kind.String(), uid, http.StatusOK, wantStream.Stream, ttfb, usage)
 }
 

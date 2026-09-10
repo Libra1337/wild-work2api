@@ -322,6 +322,7 @@ func (h *Handler) fetchRuntimeModels(rt *Runtime) []provider.ModelInfo {
 }
 
 func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
+	t0 := time.Now()
 	body, err := io.ReadAll(io.LimitReader(r.Body, 8<<20))
 	if err != nil {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request", "read body: "+err.Error())
@@ -348,7 +349,6 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer rc.Close()
-	t0 := time.Now()
 	fbw := newFirstByteWriter(w, t0)
 	if peek.Stream {
 		tee := &usageTee{}
