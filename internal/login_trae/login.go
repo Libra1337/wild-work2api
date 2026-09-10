@@ -40,8 +40,8 @@ type state struct {
 	MachineID    string `json:"machineId"`
 	DeviceID     string `json:"deviceId"`
 	RefreshToken string `json:"refreshToken,omitempty"`
-	AccessToken  string `json:"accessToken,omitempty"` // userJwt 兜底路径（无 refreshToken 时）
-	AuthCode     string `json:"authCode,omitempty"`   // PKCE 新流程：回调 authCodeInfo 里的 AuthCode
+	AccessToken  string `json:"accessToken,omitempty"`  // userJwt 兜底路径（无 refreshToken 时）
+	AuthCode     string `json:"authCode,omitempty"`     // PKCE 新流程：回调 authCodeInfo 里的 AuthCode
 	CodeVerifier string `json:"codeVerifier,omitempty"` // 登录 URL 配对的 PKCE verifier（必须保存）
 	Host         string `json:"host,omitempty"`
 	Err          string `json:"err,omitempty"`
@@ -51,8 +51,8 @@ func NewClient() *http.Client { return &http.Client{Timeout: 30 * time.Second} }
 
 // Start 启动本地一次性回调监听，返回 Trae 授权 URL。
 func Start(client *http.Client, statePath string) (string, error) {
-	machineID := randHex(32)     // 真实客户端 64 位 hex（32 字节）
-	deviceID := randNumericID()  // 真实客户端 15 位数字设备 ID（首次绑定随机产生）
+	machineID := randHex(32)                          // 真实客户端 64 位 hex（32 字节）
+	deviceID := randNumericID()                       // 真实客户端 15 位数字设备 ID（首次绑定随机产生）
 	codeVerifier, codeChallenge := traework.GenPKCE() // PKCE：verifier 必须保存，交换 AuthCode 时用
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

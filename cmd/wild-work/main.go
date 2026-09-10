@@ -157,14 +157,15 @@ func main() {
 		fatal("embed web: %v", err)
 	}
 	h := server.NewHandler(server.Config{
-		Runtimes:     runtimes,
-		APIKey:       cfg.APIKey,
-		HardCooldown: cfg.HardCreditDur,
-		SoftCooldown: cfg.SoftRateDur,
-		ErrThreshold: cfg.Cooldown.ErrThresh,
-		ErrCooldown:  cfg.ErrCooldownDur,
-		WebUI:        sub,
-		AttachAPI:    appInst.HandleAPI,
+		Runtimes:       runtimes,
+		RequestLogPath: filepath.Join(stateDir, "request_logs.json"),
+		APIKey:         cfg.APIKey,
+		HardCooldown:   cfg.HardCreditDur,
+		SoftCooldown:   cfg.SoftRateDur,
+		ErrThreshold:   cfg.Cooldown.ErrThresh,
+		ErrCooldown:    cfg.ErrCooldownDur,
+		WebUI:          sub,
+		AttachAPI:      appInst.HandleAPI,
 	})
 	appInst.SetHandler(h)
 
@@ -218,22 +219,22 @@ func main() {
 			}
 		}()
 		systray.Run(trayIconICO, "wild-work — 渠道聚合代理", systray.Actions{
-		OpenUI: func() {
-			_ = platform.OpenURL(fmt.Sprintf("http://%s:%d/", displayHost(cfg), cfg.Listen.Port))
-		},
-		OpenLog: func() {
-			if err := appInst.OpenLogFile(); err != nil {
-				log.Printf("open log: %v", err)
-			}
-		},
-		Quit: func() {
-			if platform.AskYesNo("wild-work", "确定退出 wild-work 吗？") {
-				stop()
-				appInst.Stop()
-				os.Exit(0)
-			}
-		},
-	})
+			OpenUI: func() {
+				_ = platform.OpenURL(fmt.Sprintf("http://%s:%d/", displayHost(cfg), cfg.Listen.Port))
+			},
+			OpenLog: func() {
+				if err := appInst.OpenLogFile(); err != nil {
+					log.Printf("open log: %v", err)
+				}
+			},
+			Quit: func() {
+				if platform.AskYesNo("wild-work", "确定退出 wild-work 吗？") {
+					stop()
+					appInst.Stop()
+					os.Exit(0)
+				}
+			},
+		})
 	}()
 }
 
@@ -243,7 +244,6 @@ func displayHost(cfg *config.Config) string {
 	}
 	return cfg.Listen.Host
 }
-
 
 // fatal 记录日志并弹出系统提示后退出。
 func fatal(format string, args ...any) {

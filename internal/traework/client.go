@@ -512,13 +512,13 @@ func (c *Client) UserResourceDetail(a *auth.Auth) (int64, []provider.ResourceIte
 				Quota struct {
 					CreditsLimit float64 `json:"credits_limit"`
 				}
-				PackageName   string `json:"package_name"`
-				PackageType   string `json:"package_type"`
+				PackageName string `json:"package_name"`
+				PackageType string `json:"package_type"`
 			} `json:"entitlement_base_info"`
-			DisplayDesc   string `json:"display_desc"`
-			GroupName     string `json:"group_name"`
-			GroupType     int    `json:"group_type"`
-			Usage struct {
+			DisplayDesc string `json:"display_desc"`
+			GroupName   string `json:"group_name"`
+			GroupType   int    `json:"group_type"`
+			Usage       struct {
 				CreditsAmount float64 `json:"credits_amount"`
 			} `json:"usage"`
 		} `json:"user_entitlement_pack_list"`
@@ -532,7 +532,9 @@ func (c *Client) UserResourceDetail(a *auth.Auth) (int64, []provider.ResourceIte
 		limit := int64(p.EntitlementBaseInfo.Quota.CreditsLimit)
 		used := int64(p.Usage.CreditsAmount)
 		remain := limit - used
-		if remain < 0 { remain = 0 }
+		if remain < 0 {
+			remain = 0
+		}
 		total += remain
 		// 优先使用 group_name（如"每日签到"、"每月登录积分"），其次 display_desc，最后兜底
 		name := p.GroupName

@@ -179,7 +179,7 @@ func (a *Auth) saveAtomicLocked() error {
 	if a.FilePath == "" {
 		return fmt.Errorf("no FilePath set")
 	}
-		doc := map[string]any{
+	doc := map[string]any{
 		"auth": map[string]any{
 			"accessToken":  a.AccessToken,
 			"refreshToken": a.RefreshToken,

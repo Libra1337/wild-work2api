@@ -47,12 +47,14 @@ type Config struct {
 	Pool     *pool.Pool
 	Upstream provider.Upstream
 
-	MaxRotate    int
-	HardCooldown time.Duration
-	SoftCooldown time.Duration
-	ErrThreshold int
-	ErrCooldown  time.Duration
-	RefreshSkew  time.Duration
+	MaxRotate int
+	// RequestLogPath 请求日志持久化文件；非空时重启恢复
+	RequestLogPath string
+	HardCooldown   time.Duration
+	SoftCooldown   time.Duration
+	ErrThreshold   int
+	ErrCooldown    time.Duration
+	RefreshSkew    time.Duration
 }
 
 // stickyEntry 粘性路由记录：记录上次路由账号及连续使用次数。
@@ -100,6 +102,8 @@ func NewHandler(cfg Config) *Handler {
 		cfg.RefreshSkew = 10 * time.Minute
 	}
 	h := &Handler{cfg: cfg, mux: http.NewServeMux(), sticky: make(map[string]*stickyEntry)}
+	h.reqLogs.path = cfg.RequestLogPath
+	h.reqLogs.load()
 	h.mux.HandleFunc("POST /v1/chat/completions", h.withAuth(h.chatCompletions))
 	h.mux.HandleFunc("POST /v1/responses", h.withAuth(h.responses))
 	h.mux.HandleFunc("GET /v1/models", h.withAuth(h.models))

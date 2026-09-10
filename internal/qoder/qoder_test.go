@@ -24,12 +24,12 @@ func TestNormalizeModelName(t *testing.T) {
 
 func TestModelKeyStatic(t *testing.T) {
 	cases := map[string]string{
-		"deepseek-v4-pro":  "dmodel",
-		"glm-5.3":          "gmodel",
-		"glm-5.2":          "gm51model",
-		"qwen3.8-max":      "qmodel_38max",
-		"kimi-k2.7-code":   "kmodel",
-		"unknown-model":    "",
+		"deepseek-v4-pro": "dmodel",
+		"glm-5.3":         "gmodel",
+		"glm-5.2":         "gm51model",
+		"qwen3.8-max":     "qmodel_38max",
+		"kimi-k2.7-code":  "kmodel",
+		"unknown-model":   "",
 	}
 	for name, want := range cases {
 		if got := ModelKey(name); got != want {

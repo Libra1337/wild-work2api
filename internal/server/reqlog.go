@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 )
@@ -33,6 +34,37 @@ const reqLogCap = 300
 type reqLogStore struct {
 	mu   sync.Mutex
 	logs []ReqLog
+	path string // 非空时持久化到磁盘（原子写），重启不清零
+}
+
+// load 启动时从磁盘恢复（NewHandler 调用）。
+func (s *reqLogStore) load() {
+	if s.path == "" {
+		return
+	}
+	raw, err := os.ReadFile(s.path)
+	if err != nil {
+		return
+	}
+	var logs []ReqLog
+	if json.Unmarshal(raw, &logs) == nil && len(logs) > 0 {
+		s.logs = logs
+	}
+}
+
+// saveLocked 落盘（调用方持锁）；tmp+rename 原子写。
+func (s *reqLogStore) saveLocked() {
+	if s.path == "" {
+		return
+	}
+	raw, err := json.Marshal(s.logs)
+	if err != nil {
+		return
+	}
+	tmp := s.path + ".tmp"
+	if os.WriteFile(tmp, raw, 0o600) == nil {
+		_ = os.Rename(tmp, s.path)
+	}
 }
 
 func (s *reqLogStore) add(l ReqLog) {
@@ -43,6 +75,7 @@ func (s *reqLogStore) add(l ReqLog) {
 		logs = logs[:reqLogCap]
 	}
 	s.logs = logs
+	s.saveLocked()
 }
 
 // RequestLogs 返回请求日志（新→旧）。
@@ -69,7 +102,8 @@ func (h *Handler) finishReqLog(t0 time.Time, model, channel, uid string, status 
 	if usage != nil {
 		l.InTokens = num(usage["prompt_tokens"])
 		l.OutTokens = num(usage["completion_tokens"])
-		l.CachedTokens = num(usage["cached_tokens"]) + num(usage["cache_read_input_tokens"])
+		// 实测上游命中字段为 prompt_cache_hit_tokens（cached_tokens 恒 0）
+		l.CachedTokens = num(usage["prompt_cache_hit_tokens"]) + num(usage["cache_read_input_tokens"]) + num(usage["cached_tokens"])
 		l.Credit = float64(num(usage["credit"]))
 	}
 	h.reqLogs.add(l)

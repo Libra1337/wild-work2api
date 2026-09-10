@@ -37,7 +37,7 @@ function fmtNum(n: number): string {
 export default function RequestLogsPage() {
   const { data, loading, refresh } = usePolling<{ logs: ReqLog[] }>(
     api.requestLogs,
-    10000,
+    5000,
   )
   const logs = data?.logs ?? []
 
@@ -55,7 +55,7 @@ export default function RequestLogsPage() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <p className="text-sm font-medium">
-            最近 {logs.length} 次调用 · 每 10 秒自动刷新
+            最近 {logs.length} 次调用 · 每 5 秒自动刷新
           </p>
           <p className="text-xs text-muted-foreground">
             累计输入 {fmtNum(totals.in)} tok · 输出 {fmtNum(totals.out)} tok

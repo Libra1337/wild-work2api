@@ -15,7 +15,7 @@ import (
 )
 
 var (
-	user32 = windows.NewLazySystemDLL("user32.dll")
+	user32                   = windows.NewLazySystemDLL("user32.dll")
 	procSystemParametersInfo = user32.NewProc("SystemParametersInfoW")
 )
 
@@ -197,4 +197,3 @@ func fileExists(p string) bool {
 	fi, err := os.Stat(p)
 	return err == nil && !fi.IsDir()
 }
-

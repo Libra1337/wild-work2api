@@ -29,18 +29,18 @@ const EpAuthCodeExchange = "/trae/api/v3/oauth/ExchangeToken"
 
 // DeviceInfo 设备指纹（AuthCode 交换必需，官方客户端 bb() 注入）。
 type DeviceInfo struct {
-	DeviceID         string `json:"DeviceID"`
-	MachineID        string `json:"MachineID"`
-	PlatformCode     string `json:"PlatformCode"`
-	DeviceType       string `json:"DeviceType"`
-	DeviceName       string `json:"DeviceName"`
-	DeviceModel      string `json:"DeviceModel"`
-	ClientVersion    string `json:"ClientVersion"`
-	DevicePublicKey  string `json:"DevicePublicKey"`
-	DeviceBrand      string `json:"DeviceBrand"`
-	DeviceCPU        string `json:"DeviceCPU"`
-	OSInfo           string `json:"OSInfo"`
-	OSVersion        string `json:"OSVersion"`
+	DeviceID        string `json:"DeviceID"`
+	MachineID       string `json:"MachineID"`
+	PlatformCode    string `json:"PlatformCode"`
+	DeviceType      string `json:"DeviceType"`
+	DeviceName      string `json:"DeviceName"`
+	DeviceModel     string `json:"DeviceModel"`
+	ClientVersion   string `json:"ClientVersion"`
+	DevicePublicKey string `json:"DevicePublicKey"`
+	DeviceBrand     string `json:"DeviceBrand"`
+	DeviceCPU       string `json:"DeviceCPU"`
+	OSInfo          string `json:"OSInfo"`
+	OSVersion       string `json:"OSVersion"`
 }
 
 // AuthCodeResult AuthCode 交换响应。

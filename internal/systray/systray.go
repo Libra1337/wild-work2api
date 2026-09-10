@@ -148,9 +148,9 @@ func Run(icon []byte, tooltip string, act Actions) {
 	}
 
 	// 各菜单项图标（16x16 纯色小方块）
-	iconOpen := miniPNGWithBorder(37, 99, 235)   // 蓝色 - 打开
-	iconLog  := miniPNGWithBorder(140, 145, 159)  // 灰色 - 日志
-	iconQuit := miniPNGWithBorder(220, 38, 38)    // 红色 - 退出
+	iconOpen := miniPNGWithBorder(37, 99, 235)  // 蓝色 - 打开
+	iconLog := miniPNGWithBorder(140, 145, 159) // 灰色 - 日志
+	iconQuit := miniPNGWithBorder(220, 38, 38)  // 红色 - 退出
 
 	systray.Run(func() {
 		systray.SetIcon(icon)
