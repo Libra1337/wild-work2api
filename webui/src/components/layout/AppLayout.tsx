@@ -136,6 +136,12 @@ export default function AppLayout() {
   const navigate = useNavigate()
   const location = useLocation()
 
+  useEffect(() => {
+    if (!isLoading && !isAuthenticated) {
+      navigate("/admin/login", { replace: true })
+    }
+  }, [isLoading, isAuthenticated, navigate])
+
   if (isLoading) {
     return (
       <div className="flex h-screen items-center justify-center bg-background">
@@ -145,7 +151,6 @@ export default function AppLayout() {
   }
 
   if (!isAuthenticated) {
-    navigate("/admin/login", { replace: true })
     return null
   }
 
