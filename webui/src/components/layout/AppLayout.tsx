@@ -17,7 +17,7 @@ import { buttonVariants } from "@/components/ui/button-variants"
 import { cn } from "@/lib/utils"
 import { useState, useRef, useEffect, type SVGProps } from "react"
 
-const GITHUB_REPO_URL = "https://github.com/Libra1337/wild-work2api"
+const GITHUB_REPO_URL = "https://github.com/Libra1337/Reso"
 
 const navItems = [
   { to: "/admin/dashboard", label: "概览", icon: LayoutDashboard },
@@ -154,7 +154,7 @@ export default function AppLayout() {
     navigate("/admin/login", { replace: true })
   }
 
-  const title = pageTitles[location.pathname] || "wild-work2api"
+  const title = pageTitles[location.pathname] || "Reso"
 
   return (
     <div
@@ -168,7 +168,7 @@ export default function AppLayout() {
           <LogoMark className="size-8" />
           <div>
             <h1 className="text-sm font-semibold tracking-tight">
-              wild-work2api
+              Reso
             </h1>
             <p className="text-[11px] text-sidebar-foreground/50">
               多渠道聚合网关

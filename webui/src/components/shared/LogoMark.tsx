@@ -8,7 +8,7 @@ export function LogoMark({ className }: { className?: string }) {
       <svg viewBox="0 0 64 64" className="size-full">
         <defs>
           <linearGradient
-            id="ww2a-mark"
+            id="reso-mark"
             x1="14"
             y1="12"
             x2="50"
@@ -20,22 +20,30 @@ export function LogoMark({ className }: { className?: string }) {
           </linearGradient>
         </defs>
         <path
-          d="M14 20v24M14 32c2 8 8 12 16 12M50 20v24M50 32c-2 8-8 12-16 12M24 26l8 18 8-18"
+          d="M21 17v30M21 17h11a9.5 9.5 0 0 1 0 19H21"
           fill="none"
-          stroke="url(#ww2a-mark)"
-          strokeWidth="6"
+          stroke="url(#reso-mark)"
+          strokeWidth="6.5"
           strokeLinecap="round"
           strokeLinejoin="round"
         />
         <path
-          d="M32 12v6m0 0-3-3m3 3 3-3"
+          d="M31 36l13 11"
           fill="none"
-          stroke="var(--logo-highlight)"
-          strokeWidth="3.5"
+          stroke="url(#reso-mark)"
+          strokeWidth="6.5"
           strokeLinecap="round"
           strokeLinejoin="round"
         />
-        <circle cx="32" cy="44" r="3" fill="var(--logo-start)" />
+        <path
+          d="M48 14v7m0 0-3.2-3.2M48 21l3.2-3.2"
+          fill="none"
+          stroke="var(--logo-highlight)"
+          strokeWidth="4"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+        <circle cx="48" cy="32" r="3.2" fill="var(--logo-start)" />
       </svg>
     </div>
   )

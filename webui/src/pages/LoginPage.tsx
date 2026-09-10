@@ -66,7 +66,7 @@ export default function LoginPage() {
         <div className="login-brand mb-8 flex flex-col items-center">
           <LogoMark className="size-11 p-1.5" />
           <h1 className="mt-4 text-lg font-semibold tracking-tight">
-            wild-work2api
+            Reso
           </h1>
           <p className="mt-1 text-xs text-muted-foreground">
             管理控制台登录

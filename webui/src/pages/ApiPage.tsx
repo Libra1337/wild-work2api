@@ -1,13 +1,19 @@
-import { useState } from "react"
+import { useState, type ReactNode } from "react"
 import {
   CalendarClock,
+  CalendarCheck2,
   CircleDollarSign,
+  Clock,
   Eye,
   EyeOff,
   Key,
   Link2,
   LoaderCircle,
+  Pencil,
+  Plus,
   RefreshCw,
+  ShieldCheck,
+  Trash2,
 } from "lucide-react"
 
 import { usePolling } from "@/hooks/use-polling"
@@ -21,6 +27,7 @@ import { Input } from "@/components/ui/input"
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
   DialogTrigger,
@@ -38,6 +45,7 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { Skeleton } from "@/components/ui/skeleton"
+import { cn } from "@/lib/utils"
 
 const CHANNEL_LABEL: Record<string, string> = {
   workbuddy: "WorkBuddy",
@@ -122,62 +130,373 @@ function ApiKeyChangeDialog({ onDone }: { onDone: () => void }) {
   )
 }
 
+function ScheduleRow({
+  icon,
+  label,
+  description,
+  action,
+  children,
+}: {
+  icon: ReactNode
+  label: string
+  description: string
+  action?: ReactNode
+  children: ReactNode
+}) {
+  return (
+    <div className="flex flex-col gap-2 rounded-lg border border-border/60 bg-muted/25 px-3 py-2.5 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex min-w-0 items-center gap-3">
+        <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-background text-muted-foreground">
+          {icon}
+        </div>
+        <div className="min-w-0">
+          <p className="text-[13px] font-medium">{label}</p>
+          <p className="truncate text-[11px] text-muted-foreground">
+            {description}
+          </p>
+        </div>
+      </div>
+      <div className="flex items-center gap-2 pl-11 sm:pl-0">
+        {children}
+        {action}
+      </div>
+    </div>
+  )
+}
+
+function CheckinTimesDialog({
+  times,
+  onSaved,
+}: {
+  times: string[]
+  onSaved: () => void
+}) {
+  const [open, setOpen] = useState(false)
+  const [draft, setDraft] = useState<string[]>([])
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const openDialog = () => {
+    setDraft(times.length > 0 ? [...times] : ["09:00"])
+    setError(null)
+    setOpen(true)
+  }
+
+  const update = (index: number, value: string) => {
+    setDraft((current) =>
+      current.map((t, i) => (i === index ? value : t)),
+    )
+  }
+
+  const remove = (index: number) => {
+    setDraft((current) => current.filter((_, i) => i !== index))
+  }
+
+  const add = () => {
+    setDraft((current) => [...current, ""])
+  }
+
+  const handleSave = async () => {
+    const cleaned = draft.map((t) => t.trim()).filter(Boolean)
+    if (cleaned.length === 0) {
+      setError("请至少保留一个时间点")
+      return
+    }
+    if (!cleaned.every((t) => /^([01]\d|2[0-3]):[0-5]\d$/.test(t))) {
+      setError("时间格式应为 HH:MM，如 09:00")
+      return
+    }
+    setSaving(true)
+    setError(null)
+    try {
+      await api.configCheckinTimes(cleaned)
+      setOpen(false)
+      onSaved()
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "保存失败"
+      setError(msg)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger
+        render={
+          <Button variant="ghost" size="icon-sm" aria-label="编辑签到时间" />
+        }
+        onClick={openDialog}
+      >
+        <Pencil className="size-3.5" />
+      </DialogTrigger>
+      <DialogContent className="sm:max-w-sm">
+        <DialogHeader>
+          <DialogTitle>编辑签到时间</DialogTitle>
+          <DialogDescription>
+            每日在这些时间点自动签到领取额度（服务器时区）
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
+          {error && (
+            <Alert variant="destructive">
+              <AlertDescription>{error}</AlertDescription>
+            </Alert>
+          )}
+          <div className="space-y-2">
+            {draft.map((time, index) => (
+              <div key={index} className="flex items-center gap-2">
+                <Clock className="size-3.5 shrink-0 text-muted-foreground" />
+                <Input
+                  value={time}
+                  onChange={(event) => update(index, event.target.value)}
+                  placeholder="HH:MM"
+                  className="h-10 font-mono md:h-8"
+                />
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  className="shrink-0 text-destructive hover:text-destructive"
+                  onClick={() => remove(index)}
+                  disabled={draft.length <= 1}
+                  aria-label="删除此时间点"
+                >
+                  <Trash2 className="size-3.5" />
+                </Button>
+              </div>
+            ))}
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            className="w-full border-dashed"
+            onClick={add}
+          >
+            <Plus className="mr-1.5 h-3.5 w-3.5" />
+            添加时间点
+          </Button>
+        </div>
+        <DialogFooter>
+          <DialogClose render={<Button variant="outline" />}>取消</DialogClose>
+          <Button onClick={handleSave} disabled={saving}>
+            {saving ? <LoadingSpinner size={16} className="mr-2" /> : null}
+            保存
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function ScheduleCard({
+  data,
+  loading,
+  onChanged,
+}: {
+  data?: AppState
+  loading: boolean
+  onChanged: () => void
+}) {
+  const checkinTimes = data?.checkin_times ?? []
+  const keepalive = data?.keepalive_hours ?? []
+
+  return (
+    <Card className="border-border/60 shadow-sm">
+      <CardHeader className="pb-3">
+        <CardTitle className="flex items-center gap-2 text-sm font-medium">
+          <CalendarClock className="size-4 text-primary" />
+          调度策略
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="grid gap-2">
+        {loading ? (
+          <>
+            <Skeleton className="h-14 w-full" />
+            <Skeleton className="h-14 w-full" />
+          </>
+        ) : (
+          <>
+            <ScheduleRow
+              icon={<CalendarCheck2 className="size-4" />}
+              label="自动签到"
+              description="每日定时签到领取额度，余额恢复自动解冻账号"
+              action={<CheckinTimesDialog times={checkinTimes} onSaved={onChanged} />}
+            >
+              {checkinTimes.map((t) => (
+                <Badge key={t} variant="secondary" className="font-mono">
+                  {t}
+                </Badge>
+              ))}
+            </ScheduleRow>
+            <ScheduleRow
+              icon={<ShieldCheck className="size-4" />}
+              label="Token 保活"
+              description="每日整点刷新账号 token，会话失效自动停用"
+            >
+              {keepalive.map((h) => (
+                <Badge key={h} variant="secondary" className="font-mono">
+                  {String(h).padStart(2, "0")}:00
+                </Badge>
+              ))}
+            </ScheduleRow>
+          </>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+function FeesCard({ onChanged }: { onChanged: () => void }) {
+  const { data: fees, loading } = usePolling<FeesInfo>(api.fees, 300000)
+  const [tab, setTab] = useState<string>("")
+  const [refreshing, setRefreshing] = useState(false)
+
+  const channels = fees?.channels ?? []
+  const activeTab = channels.some((c) => c.channel === tab)
+    ? tab
+    : (channels[0]?.channel ?? "")
+  const active = channels.find((c) => c.channel === activeTab)
+
+  const refresh = async () => {
+    setRefreshing(true)
+    try {
+      await api.feesRefresh()
+      await onChanged()
+    } finally {
+      setRefreshing(false)
+    }
+  }
+
+  return (
+    <Card className="border-border/60 shadow-sm">
+      <CardHeader className="pb-3">
+        <div className="flex items-center justify-between gap-3">
+          <CardTitle className="flex items-center gap-2 text-sm font-medium">
+            <CircleDollarSign className="size-4 text-primary" />
+            渠道费率
+          </CardTitle>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-7 text-xs"
+            disabled={refreshing}
+            onClick={() => void refresh()}
+          >
+            {refreshing ? (
+              <LoaderCircle className="mr-1.5 size-3 animate-spin" />
+            ) : (
+              <RefreshCw className="mr-1.5 size-3" />
+            )}
+            刷新
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {fees?.error && (
+          <Alert variant="destructive">
+            <AlertDescription>{fees.error}</AlertDescription>
+          </Alert>
+        )}
+
+        {loading ? (
+          <Skeleton className="h-48 w-full" />
+        ) : channels.length === 0 ? (
+          <div className="rounded-lg border border-dashed border-border px-4 py-10 text-center text-sm text-muted-foreground">
+            暂无费率数据 — 添加账号后可从上游拉取
+          </div>
+        ) : (
+          <>
+            <div
+              role="tablist"
+              aria-label="费率渠道"
+              className="flex flex-wrap gap-1 rounded-lg bg-muted/40 p-1"
+            >
+              {channels.map(({ channel, models }) => (
+                <button
+                  key={channel}
+                  type="button"
+                  role="tab"
+                  aria-selected={channel === activeTab}
+                  onClick={() => setTab(channel)}
+                  className={cn(
+                    "flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors",
+                    channel === activeTab
+                      ? "bg-background text-foreground shadow-xs"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  {CHANNEL_LABEL[channel] ?? channel}
+                  <span
+                    className={cn(
+                      "rounded px-1 font-mono text-[10px]",
+                      channel === activeTab
+                        ? "bg-primary/10 text-primary"
+                        : "bg-muted text-muted-foreground",
+                    )}
+                  >
+                    {models.length}
+                  </span>
+                </button>
+              ))}
+            </div>
+
+            {active && (
+              <div>
+                <p className="mb-2 text-[11px] text-muted-foreground">
+                  模型 ID 需带前缀{" "}
+                  <code className="rounded bg-muted px-1 font-mono">
+                    {active.channel}/
+                  </code>
+                </p>
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>模型</TableHead>
+                      <TableHead className="text-right">费率</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {active.models.map((m) => (
+                      <TableRow key={m.model}>
+                        <TableCell className="font-mono text-xs">
+                          {m.model}
+                          {m.note && (
+                            <span className="ml-1.5 text-[11px] text-muted-foreground">
+                              {m.note}
+                            </span>
+                          )}
+                        </TableCell>
+                        <TableCell className="whitespace-nowrap text-right text-xs">
+                          {m.rate}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            )}
+          </>
+        )}
+
+        {fees && (
+          <p className="text-[11px] text-muted-foreground">
+            缓存于 {fees.cached_at || "—"} · {fees.disclaimer}
+          </p>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
 export default function ApiPage() {
   const { data, loading, error, refresh } = usePolling<AppState>(
     api.getState,
     10000,
   )
-  const { data: fees } = usePolling<FeesInfo>(api.fees, 300000)
   const [showKey, setShowKey] = useState(false)
-  const [timesDraft, setTimesDraft] = useState<string | null>(null)
-  const [savingTimes, setSavingTimes] = useState(false)
-  const [feesRefreshing, setFeesRefreshing] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
-  const [noticeError, setNoticeError] = useState<string | null>(null)
 
   const baseUrl = `${window.location.origin}/v1`
-  const times = timesDraft ?? (data?.checkin_times ?? []).join(", ")
-
-  const saveTimes = async () => {
-    const parsed = timesDraft
-      ?.split(/[，,]/)
-      .map((t) => t.trim())
-      .filter(Boolean)
-    if (!parsed || parsed.length === 0) {
-      setNoticeError("请至少填写一个时间点，如 09:00")
-      return
-    }
-    if (!parsed.every((t) => /^([01]\d|2[0-3]):[0-5]\d$/.test(t))) {
-      setNoticeError("时间格式应为 HH:MM，如 09:00")
-      return
-    }
-    setSavingTimes(true)
-    setNoticeError(null)
-    try {
-      await api.configCheckinTimes(parsed)
-      setTimesDraft(null)
-      setNotice("签到时间已更新")
-      await refresh()
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "保存失败"
-      setNoticeError(msg)
-    } finally {
-      setSavingTimes(false)
-    }
-  }
-
-  const refreshFees = async () => {
-    setFeesRefreshing(true)
-    try {
-      await api.feesRefresh()
-      setNotice("费率已刷新")
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "刷新失败"
-      setNoticeError(msg)
-    } finally {
-      setFeesRefreshing(false)
-    }
-  }
 
   return (
     <div className="mx-auto w-full max-w-[1320px] space-y-5">
@@ -191,169 +510,74 @@ export default function ApiPage() {
           <AlertDescription>{notice}</AlertDescription>
         </Alert>
       )}
-      {noticeError && (
-        <Alert variant="destructive">
-          <AlertDescription>{noticeError}</AlertDescription>
-        </Alert>
-      )}
 
-      <Card className="border-border/60 shadow-sm">
-        <CardHeader className="pb-3">
-          <CardTitle className="flex items-center gap-2 text-sm font-medium">
-            <Link2 className="size-4 text-primary" />
-            OpenAI 兼容端点
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          {loading ? (
-            <>
-              <Skeleton className="h-10 w-full" />
-              <Skeleton className="h-10 w-full" />
-            </>
-          ) : (
-            <>
-              <div className="flex items-center gap-1 rounded-lg border border-border/60 bg-muted/25 p-2">
-                <code className="min-w-0 flex-1 truncate px-1 font-mono text-xs">
-                  {baseUrl}
-                </code>
-                <CopyButton text={baseUrl} />
-              </div>
-              <div className="flex items-center gap-1 rounded-lg border border-border/60 bg-muted/25 p-2">
-                <code className="min-w-0 flex-1 truncate px-1 font-mono text-xs">
-                  {showKey ? data?.api_key : maskKey(data?.api_key ?? "")}
-                </code>
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  onClick={() => setShowKey((v) => !v)}
-                  aria-label={showKey ? "隐藏 Key" : "显示 Key"}
-                >
-                  {showKey ? <EyeOff /> : <Eye />}
-                </Button>
-                <CopyButton text={data?.api_key ?? ""} />
-                <ApiKeyChangeDialog onDone={() => void refresh()} />
-              </div>
-              <p className="text-xs text-muted-foreground">
-                模型 ID 需带渠道前缀：workbuddy/、traework/、qoder/
-              </p>
-            </>
-          )}
-        </CardContent>
-      </Card>
-
-      <Card className="border-border/60 shadow-sm">
-        <CardHeader className="pb-3">
-          <CardTitle className="flex items-center gap-2 text-sm font-medium">
-            <CalendarClock className="size-4 text-primary" />
-            自动签到
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="flex flex-wrap items-center gap-2">
-          <Input
-            value={times}
-            onChange={(event) => setTimesDraft(event.target.value)}
-            className="max-w-64 font-mono"
-            placeholder="09:00, 21:00"
-          />
-          <Button
-            size="sm"
-            disabled={savingTimes || timesDraft === null}
-            onClick={() => void saveTimes()}
-          >
-            {savingTimes ? <LoadingSpinner size={14} className="mr-1.5" /> : null}
-            保存
-          </Button>
-          <span className="text-xs text-muted-foreground">
-            Token 保活：
-            {(data?.keepalive_hours ?? [])
-              .map((h) => `${String(h).padStart(2, "0")}:00`)
-              .join(" / ")}
-          </span>
-        </CardContent>
-      </Card>
-
-      <Card className="border-border/60 shadow-sm">
-        <CardHeader className="pb-3">
-          <div className="flex items-center justify-between gap-3">
-            <CardTitle className="flex items-center gap-2 text-sm font-medium">
-              <CircleDollarSign className="size-4 text-primary" />
-              渠道费率
-            </CardTitle>
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-7 text-xs"
-              disabled={feesRefreshing}
-              onClick={() => void refreshFees()}
-            >
-              {feesRefreshing ? (
-                <LoaderCircle className="mr-1.5 size-3 animate-spin" />
+      <div className="grid grid-cols-1 items-start gap-5 xl:grid-cols-2">
+        <div className="space-y-5">
+          <Card className="border-border/60 shadow-sm">
+            <CardHeader className="pb-3">
+              <CardTitle className="flex items-center gap-2 text-sm font-medium">
+                <Link2 className="size-4 text-primary" />
+                OpenAI 兼容端点
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {loading ? (
+                <>
+                  <Skeleton className="h-10 w-full" />
+                  <Skeleton className="h-10 w-full" />
+                </>
               ) : (
-                <RefreshCw className="mr-1.5 size-3" />
+                <>
+                  <div className="flex items-center gap-1 rounded-lg border border-border/60 bg-muted/25 p-2">
+                    <code className="min-w-0 flex-1 truncate px-1 font-mono text-xs">
+                      {baseUrl}
+                    </code>
+                    <CopyButton text={baseUrl} />
+                  </div>
+                  <div className="flex items-center gap-1 rounded-lg border border-border/60 bg-muted/25 p-2">
+                    <code className="min-w-0 flex-1 truncate px-1 font-mono text-xs">
+                      {showKey ? data?.api_key : maskKey(data?.api_key ?? "")}
+                    </code>
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      onClick={() => setShowKey((v) => !v)}
+                      aria-label={showKey ? "隐藏 Key" : "显示 Key"}
+                    >
+                      {showKey ? <EyeOff /> : <Eye />}
+                    </Button>
+                    <CopyButton text={data?.api_key ?? ""} />
+                    <ApiKeyChangeDialog
+                      onDone={() => {
+                        setNotice("API Key 已更新")
+                        void refresh()
+                      }}
+                    />
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    模型 ID 需带渠道前缀：workbuddy/、traework/、qoder/
+                  </p>
+                </>
               )}
-              刷新费率
-            </Button>
-          </div>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          {fees?.error && (
-            <Alert variant="destructive">
-              <AlertDescription>{fees.error}</AlertDescription>
-            </Alert>
-          )}
-          {fees && fees.channels.length > 0 ? (
-            fees.channels.map(({ channel, models }) => (
-              <div key={channel} className="space-y-2">
-                <div className="flex items-center gap-2">
-                  <h3 className="text-sm font-medium">
-                    {CHANNEL_LABEL[channel] ?? channel}
-                  </h3>
-                  <Badge variant="secondary" className="text-[10px]">
-                    {models.length} 模型
-                  </Badge>
-                  <code className="text-xs text-muted-foreground">
-                    {channel}/
-                  </code>
-                </div>
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>模型</TableHead>
-                      <TableHead>费率</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {models.map((m) => (
-                      <TableRow key={m.model}>
-                        <TableCell className="font-mono text-xs">
-                          {m.model}
-                          {m.note && (
-                            <span className="ml-1 text-muted-foreground">
-                              {m.note}
-                            </span>
-                          )}
-                        </TableCell>
-                        <TableCell className="whitespace-nowrap text-xs">
-                          {m.rate}
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
-            ))
-          ) : (
-            <div className="rounded-lg border border-dashed border-border px-4 py-8 text-center text-sm text-muted-foreground">
-              暂无费率数据 — 添加账号后可从上游拉取
-            </div>
-          )}
-          {fees && (
-            <p className="text-xs text-muted-foreground">
-              {fees.note} 缓存于 {fees.cached_at || "—"}
-            </p>
-          )}
-        </CardContent>
-      </Card>
+            </CardContent>
+          </Card>
+
+          <ScheduleCard
+            data={data ?? undefined}
+            loading={loading}
+            onChanged={() => {
+              setNotice("调度策略已更新")
+              void refresh()
+            }}
+          />
+        </div>
+
+        <FeesCard
+          onChanged={() => {
+            setNotice("费率已刷新")
+          }}
+        />
+      </div>
     </div>
   )
 }

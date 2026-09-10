@@ -23,7 +23,7 @@ export interface ThemeContextValue {
   setMode: (mode: ThemeMode) => void
 }
 
-export const THEME_STORAGE_KEY = "ww2a.theme"
+export const THEME_STORAGE_KEY = "reso.theme"
 export const DEFAULT_THEME_MODE: ThemeMode = "system"
 
 export const themeOptions: ThemeOption[] = [

@@ -1,4 +1,4 @@
-# wild-work2api
+# Reso
 
 > 把 WorkBuddy(CodeBuddy)、TraeWork、Qoder 的多个账号聚合成一个 **OpenAI 兼容 API**，自带 Web 管理控制台，Docker 一键部署。
 
@@ -9,7 +9,7 @@
 
 ## 项目简介
 
-wild-work2api 是一个自托管的多渠道账号聚合网关：
+Reso（wild-work2api）是一个自托管的多渠道账号聚合网关：
 
 - **三渠道聚合**：WorkBuddy(腾讯 CodeBuddy) + TraeWork(字节) + Qoder(阿里)，模型 ID 带渠道前缀路由（`workbuddy/<model>`、`traework/<model>`、`qoder/<model>`）
 - **Web 控制台**：浏览器里添加账号（OAuth 授权自动导入）、签到、刷新积分、停用、删除、查看费率与日志——全部自助，无需命令行
@@ -26,8 +26,8 @@ wild-work2api 是一个自托管的多渠道账号聚合网关：
 ## 快速开始（Docker，推荐）
 
 ```bash
-git clone https://github.com/Libra1337/wild-work2api.git
-cd wild-work2api
+git clone https://github.com/Libra1337/Reso.git
+cd Reso
 cp config.example.json config.json   # 编辑 api_key（公网部署必须设置）
 docker compose up -d --build
 ```
@@ -42,8 +42,8 @@ docker compose up -d --build
 ### 桌面模式（Windows/macOS）
 
 ```bash
-go build -o wild-work ./cmd/wild-work && ./wild-work        # 系统托盘常驻
-./wild-work --no-tray                                        # Linux 无头模式
+go build -o reso ./cmd/wild-work && ./reso        # 系统托盘常驻
+./reso --no-tray                                        # Linux 无头模式
 ```
 
 ## Web 控制台
@@ -147,7 +147,7 @@ internal/
   upstream/        # WorkBuddy 上游封装
   traework/ qoder/ # TraeWork / Qoder 上游封装
   auth/ config/ platform/ systray/ provider/
-webui/             # Web 控制台源码（React 19 + Tailwind 4 + shadcn 风格）
+webui/             # Web 控制台源码（React 19 + Tailwind 4 + shadcn 风格，品牌 Reso）
 docs/              # 上游逆向笔记
 ```
 
