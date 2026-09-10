@@ -29,61 +29,101 @@ type ReqLog struct {
 	Credit       float64 `json:"credit"`
 }
 
-const reqLogCap = 300
+// reqLogMemCap 面板内存窗口大小；完整历史在 jsonl 追加日志里永久保留。
+const reqLogMemCap = 1000
 
 type reqLogStore struct {
-	mu   sync.Mutex
-	logs []ReqLog
-	path string // 非空时持久化到磁盘（原子写），重启不清零
+	mu      sync.Mutex
+	logs    []ReqLog // 内存窗口（旧→新追加，读取时倒序返回）
+	path    string   // jsonl 追加日志路径（每请求一行，永不删除）
+	legacy  string   // 旧版单 JSON 文件路径（存在则一次性导入）
+	journal *os.File
 }
 
-// load 启动时从磁盘恢复（NewHandler 调用）。
+// load 启动时恢复：优先读 jsonl 日志尾窗；日志为空且存在旧版 JSON 时一次性导入。
 func (s *reqLogStore) load() {
 	if s.path == "" {
 		return
 	}
-	raw, err := os.ReadFile(s.path)
-	if err != nil {
-		return
+	if raw, err := os.ReadFile(s.path); err == nil {
+		for _, line := range bytes.Split(raw, []byte("\n")) {
+			line = bytes.TrimSpace(line)
+			if len(line) == 0 {
+				continue
+			}
+			var l ReqLog
+			if json.Unmarshal(line, &l) == nil {
+				s.logs = append(s.logs, l)
+			}
+		}
 	}
-	var logs []ReqLog
-	if json.Unmarshal(raw, &logs) == nil && len(logs) > 0 {
-		s.logs = logs
+	// 旧版单 JSON 导入（只做一次：导入后追加进日志，旧文件保留不动）
+	if len(s.logs) == 0 && s.legacy != "" {
+		if raw, err := os.ReadFile(s.legacy); err == nil {
+			var old []ReqLog
+			if json.Unmarshal(raw, &old) == nil {
+				// 旧文件新→旧，倒序成旧→新后追加
+				for i := len(old) - 1; i >= 0; i-- {
+					s.logs = append(s.logs, old[i])
+				}
+			}
+		}
 	}
+	if len(s.logs) > reqLogMemCap {
+		s.logs = s.logs[len(s.logs)-reqLogMemCap:]
+	}
+	if f, err := os.OpenFile(s.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600); err == nil {
+		s.journal = f
+	}
+	// 内存里有导入数据但日志文件为空（首次迁移）：补写进日志
+	if s.journal != nil && len(s.logs) > 0 {
+		if fi, err := s.journal.Stat(); err == nil && fi.Size() == 0 {
+			for _, l := range s.logs {
+				if raw, err := json.Marshal(l); err == nil {
+					_, _ = s.journal.Write(append(raw, '\n'))
+				}
+			}
+		}
+	}
+	s.trimMemLocked()
 }
 
-// saveLocked 落盘（调用方持锁）；tmp+rename 原子写。
-func (s *reqLogStore) saveLocked() {
-	if s.path == "" {
-		return
-	}
-	raw, err := json.Marshal(s.logs)
-	if err != nil {
-		return
-	}
-	tmp := s.path + ".tmp"
-	if os.WriteFile(tmp, raw, 0o600) == nil {
-		_ = os.Rename(tmp, s.path)
+func (s *reqLogStore) trimMemLocked() {
+	if len(s.logs) > reqLogMemCap {
+		s.logs = s.logs[len(s.logs)-reqLogMemCap:]
 	}
 }
 
 func (s *reqLogStore) add(l ReqLog) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	logs := append([]ReqLog{l}, s.logs...) // 新的在前
-	if len(logs) > reqLogCap {
-		logs = logs[:reqLogCap]
+	if s.journal != nil {
+		if raw, err := json.Marshal(l); err == nil {
+			_, _ = s.journal.Write(append(raw, '\n'))
+		}
 	}
-	s.logs = logs
-	s.saveLocked()
+	s.logs = append(s.logs, l)
+	s.trimMemLocked()
+}
+
+// close 关闭日志句柄（进程退出/测试清理用）。
+func (s *reqLogStore) close() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.journal != nil {
+		_ = s.journal.Close()
+		s.journal = nil
+	}
 }
 
 // RequestLogs 返回请求日志（新→旧）。
 func (h *Handler) RequestLogs() []ReqLog {
 	h.reqLogs.mu.Lock()
 	defer h.reqLogs.mu.Unlock()
-	out := make([]ReqLog, len(h.reqLogs.logs))
-	copy(out, h.reqLogs.logs)
+	out := make([]ReqLog, 0, len(h.reqLogs.logs))
+	for i := len(h.reqLogs.logs) - 1; i >= 0; i-- {
+		out = append(out, h.reqLogs.logs[i])
+	}
 	return out
 }
 

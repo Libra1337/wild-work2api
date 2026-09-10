@@ -157,15 +157,16 @@ func main() {
 		fatal("embed web: %v", err)
 	}
 	h := server.NewHandler(server.Config{
-		Runtimes:       runtimes,
-		RequestLogPath: filepath.Join(stateDir, "request_logs.json"),
-		APIKey:         cfg.APIKey,
-		HardCooldown:   cfg.HardCreditDur,
-		SoftCooldown:   cfg.SoftRateDur,
-		ErrThreshold:   cfg.Cooldown.ErrThresh,
-		ErrCooldown:    cfg.ErrCooldownDur,
-		WebUI:          sub,
-		AttachAPI:      appInst.HandleAPI,
+		Runtimes:             runtimes,
+		RequestLogPath:       filepath.Join(stateDir, "request_logs.jsonl"),
+		RequestLogLegacyPath: filepath.Join(stateDir, "request_logs.json"),
+		APIKey:               cfg.APIKey,
+		HardCooldown:         cfg.HardCreditDur,
+		SoftCooldown:         cfg.SoftRateDur,
+		ErrThreshold:         cfg.Cooldown.ErrThresh,
+		ErrCooldown:          cfg.ErrCooldownDur,
+		WebUI:                sub,
+		AttachAPI:            appInst.HandleAPI,
 	})
 	appInst.SetHandler(h)
 

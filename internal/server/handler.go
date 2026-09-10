@@ -49,13 +49,15 @@ type Config struct {
 	Upstream provider.Upstream
 
 	MaxRotate int
-	// RequestLogPath 请求日志持久化文件；非空时重启恢复
+	// RequestLogPath 请求日志持久化文件（jsonl 追加，永不删除）；非空时重启恢复
 	RequestLogPath string
-	HardCooldown   time.Duration
-	SoftCooldown   time.Duration
-	ErrThreshold   int
-	ErrCooldown    time.Duration
-	RefreshSkew    time.Duration
+	// RequestLogLegacyPath 旧版单 JSON 日志路径；存在且新日志为空时一次性导入
+	RequestLogLegacyPath string
+	HardCooldown         time.Duration
+	SoftCooldown         time.Duration
+	ErrThreshold         int
+	ErrCooldown          time.Duration
+	RefreshSkew          time.Duration
 }
 
 // stickyEntry 粘性路由记录：记录上次路由账号及连续使用次数。
@@ -104,6 +106,7 @@ func NewHandler(cfg Config) *Handler {
 	}
 	h := &Handler{cfg: cfg, mux: http.NewServeMux(), sticky: make(map[string]*stickyEntry)}
 	h.reqLogs.path = cfg.RequestLogPath
+	h.reqLogs.legacy = cfg.RequestLogLegacyPath
 	h.reqLogs.load()
 	h.mux.HandleFunc("POST /v1/chat/completions", h.withAuth(h.chatCompletions))
 	h.mux.HandleFunc("POST /v1/responses", h.withAuth(h.responses))
