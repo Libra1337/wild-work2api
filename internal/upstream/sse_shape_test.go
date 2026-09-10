@@ -164,6 +164,37 @@ func TestStreamErrorFramePassthrough(t *testing.T) {
 	}
 }
 
+// 回归：推理内容双字段输出（reasoning_content + reasoning），
+// 下游认哪派约定都能显示思考过程。
+func TestStreamReasoningDualField(t *testing.T) {
+	raw := "data: {\"id\":\"r1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"reasoning_content\":\"thinking hard\"}}]}\n\n" +
+		"data: {\"id\":\"r1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"answer\"}}]}\n\n" +
+		"data: {\"id\":\"r1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n" +
+		"data: [DONE]\n\n"
+	rec := httptest.NewRecorder()
+	if err := Stream(rec, strings.NewReader(raw)); err != nil {
+		t.Fatal(err)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"reasoning_content":"thinking hard"`) {
+		t.Errorf("reasoning_content missing: %q", body)
+	}
+	if !strings.Contains(body, `"reasoning":"thinking hard"`) {
+		t.Errorf("reasoning missing: %q", body)
+	}
+	// 上游只发 reasoning（OpenRouter 派）时同样双字段输出
+	raw2 := "data: {\"id\":\"r2\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{\"reasoning\":\"alt style\"}}]}\n\n" +
+		"data: [DONE]\n\n"
+	rec2 := httptest.NewRecorder()
+	if err := Stream(rec2, strings.NewReader(raw2)); err != nil {
+		t.Fatal(err)
+	}
+	b2 := rec2.Body.String()
+	if !strings.Contains(b2, `"reasoning":"alt style"`) || !strings.Contains(b2, `"reasoning_content":"alt style"`) {
+		t.Errorf("alt-style reasoning not dual-emitted: %q", b2)
+	}
+}
+
 // 回归：`data:[DONE]`（无空格）不再产生双 [DONE]。
 func TestStreamDoneWithoutSpace(t *testing.T) {
 	raw := "data: {\"id\":\"d1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"m\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"x\"}}]}\n\n" +

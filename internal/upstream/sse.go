@@ -74,6 +74,8 @@ func Aggregate(r io.Reader) (map[string]any, error) {
 								}
 								if rc, ok := delta["reasoning_content"].(string); ok {
 									reasoning.WriteString(rc)
+								} else if rc, ok := delta["reasoning"].(string); ok {
+									reasoning.WriteString(rc)
 								}
 								if tcs, ok := delta["tool_calls"].([]any); ok {
 									for _, tc := range tcs {
@@ -146,7 +148,9 @@ func Aggregate(r io.Reader) (map[string]any, error) {
 		"content": content.String(),
 	}
 	if reasoning.Len() > 0 {
+		// 双字段输出（reasoning_content + reasoning），兼容两派下游约定
 		message["reasoning_content"] = reasoning.String()
+		message["reasoning"] = reasoning.String()
 	}
 	if len(toolOrder) > 0 {
 		sortInts(toolOrder)
@@ -293,9 +297,16 @@ func (rb *chunkRebuilder) rebuild(chunk map[string]any) map[string]any {
 		}
 		delta, _ := c["delta"].(map[string]any)
 		nd := map[string]any{}
-		for _, k := range []string{"content", "reasoning_content"} {
-			if s, ok := delta[k].(string); ok && s != "" {
-				nd[k] = s
+		if s, ok := delta["content"].(string); ok && s != "" {
+			nd["content"] = s
+		}
+		// 推理内容双字段输出：DeepSeek/GLM/Kimi 约定 reasoning_content，
+		// OpenRouter/OpenAI 系约定 reasoning。两派都发，下游认哪个都能显示思考过程。
+		for _, rk := range []string{"reasoning_content", "reasoning"} {
+			if s, ok := delta[rk].(string); ok && s != "" {
+				nd["reasoning_content"] = s
+				nd["reasoning"] = s
+				break
 			}
 		}
 		if role, ok := delta["role"].(string); ok && role != "" && !rb.roleSent {
