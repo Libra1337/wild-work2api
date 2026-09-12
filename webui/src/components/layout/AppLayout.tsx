@@ -1,69 +1,67 @@
-import { NavLink, Outlet, useNavigate, useLocation } from "react-router-dom"
+import { NavLink, Outlet, useNavigate, useLocation } from "react-router-dom";
 import {
-  LayoutDashboard,
-  Key,
-  ShieldCheck,
-  ClipboardList,
   Activity,
-  LogOut,
-  ChevronDown,
-  User,
-  Palette,
   Check,
-} from "lucide-react"
-import { useAuth } from "@/hooks/use-auth"
-import { useDashboardTheme } from "@/components/theme/theme-context"
-import { LogoMark } from "@/components/shared/LogoMark"
-import { buttonVariants } from "@/components/ui/button-variants"
-import { cn } from "@/lib/utils"
-import { useState, useRef, useEffect, type SVGProps } from "react"
+  ChevronDown,
+  ClipboardList,
+  Key,
+  LayoutDashboard,
+  LogOut,
+  Palette,
+  PawPrint,
+  ShieldCheck,
+  User,
+} from "lucide-react";
+import { useAuth } from "@/hooks/use-auth";
+import { useDashboardTheme } from "@/components/theme/theme-context";
+import { LogoMark } from "@/components/shared/LogoMark";
+import { buttonVariants } from "@/components/ui/button-variants";
+import { cn } from "@/lib/utils";
+import { useState, useRef, useEffect, type SVGProps } from "react";
 
-const GITHUB_REPO_URL = "https://github.com/Libra1337/Reso2api"
+const GITHUB_REPO_URL = "https://github.com/Libra1337/Reso2api";
 
 const navItems = [
   { to: "/admin/dashboard", label: "概览", icon: LayoutDashboard },
+  { to: "/admin/cats", label: "猫猫乐园", icon: PawPrint },
   { to: "/admin/token", label: "账号管理", icon: ShieldCheck },
   { to: "/admin/keys", label: "API 接入", icon: Key },
   { to: "/admin/reqlog", label: "请求日志", icon: Activity },
   { to: "/admin/logs", label: "运行日志", icon: ClipboardList },
-]
+];
 
 const pageTitles: Record<string, string> = {
   "/admin/dashboard": "概览",
+  "/admin/cats": "猫猫乐园",
   "/admin/token": "账号管理",
   "/admin/keys": "API 接入",
   "/admin/reqlog": "请求日志",
   "/admin/logs": "运行日志",
-}
+};
 
 function GitHubMark(props: SVGProps<SVGSVGElement>) {
   return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="currentColor"
-      aria-hidden="true"
-      {...props}
-    >
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" {...props}>
       <path d="M12 2C6.48 2 2 6.59 2 12.25c0 4.53 2.87 8.37 6.84 9.73.5.09.68-.22.68-.49 0-.24-.01-1.04-.01-1.89-2.51.47-3.16-.63-3.36-1.2-.11-.29-.6-1.2-1.03-1.45-.35-.2-.85-.69-.01-.7.79-.01 1.35.74 1.54 1.05.9 1.55 2.34 1.11 2.91.85.09-.67.35-1.11.64-1.37-2.22-.26-4.55-1.14-4.55-5.06 0-1.12.39-2.03 1.03-2.75-.1-.26-.45-1.3.1-2.71 0 0 .84-.28 2.75 1.05A9.28 9.28 0 0 1 12 7.01c.85 0 1.71.12 2.51.34 1.91-1.33 2.75-1.05 2.75-1.05.55 1.41.2 2.45.1 2.71.64.72 1.03 1.63 1.03 2.75 0 3.93-2.34 4.8-4.57 5.06.36.32.68.93.68 1.89 0 1.37-.01 2.47-.01 2.81 0 .27.18.59.69.49A10.17 10.17 0 0 0 22 12.25C22 6.59 17.52 2 12 2Z" />
     </svg>
-  )
+  );
 }
 
 function UserMenu({ onLogout }: { onLogout: () => void }) {
-  const [open, setOpen] = useState(false)
-  const ref = useRef<HTMLDivElement>(null)
-  const { mode, theme, options, setMode } = useDashboardTheme()
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const { mode, theme, options, setMode } = useDashboardTheme();
 
   useEffect(() => {
-    if (!open) return
+    if (!open) return;
     const handler = (e: MouseEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) {
-        setOpen(false)
+        setOpen(false);
       }
-    }
-    document.addEventListener("mousedown", handler)
-    return () => document.removeEventListener("mousedown", handler)
-  }, [open])
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open]);
 
   return (
     <div className="relative" ref={ref}>
@@ -87,11 +85,11 @@ function UserMenu({ onLogout }: { onLogout: () => void }) {
             </div>
             <div className="space-y-0.5">
               {options.map((option) => {
-                const selected = option.mode === mode
+                const selected = option.mode === mode;
                 const description =
                   option.mode === "system"
                     ? `当前：${theme.appearance === "dark" ? "深色" : "浅色"}`
-                    : option.description
+                    : option.description;
                 return (
                   <button
                     key={option.mode}
@@ -113,15 +111,15 @@ function UserMenu({ onLogout }: { onLogout: () => void }) {
                     </span>
                     {selected && <Check className="size-3.5 text-primary" />}
                   </button>
-                )
+                );
               })}
             </div>
           </div>
           <div className="border-t border-border" />
           <button
             onClick={() => {
-              setOpen(false)
-              onLogout()
+              setOpen(false);
+              onLogout();
             }}
             className="flex w-full items-center gap-2 px-3 py-2 text-sm text-destructive transition-colors hover:bg-destructive/10"
           >
@@ -131,38 +129,38 @@ function UserMenu({ onLogout }: { onLogout: () => void }) {
         </div>
       )}
     </div>
-  )
+  );
 }
 
 export default function AppLayout() {
-  const { isAuthenticated, isLoading, logout } = useAuth()
-  const navigate = useNavigate()
-  const location = useLocation()
+  const { isAuthenticated, isLoading, logout } = useAuth();
+  const navigate = useNavigate();
+  const location = useLocation();
 
   useEffect(() => {
     if (!isLoading && !isAuthenticated) {
-      navigate("/admin/login", { replace: true })
+      navigate("/admin/login", { replace: true });
     }
-  }, [isLoading, isAuthenticated, navigate])
+  }, [isLoading, isAuthenticated, navigate]);
 
   if (isLoading) {
     return (
       <div className="flex h-screen items-center justify-center bg-background">
         <div className="text-muted-foreground text-sm">加载中...</div>
       </div>
-    )
+    );
   }
 
   if (!isAuthenticated) {
-    return null
+    return null;
   }
 
   const handleLogout = async () => {
-    await logout()
-    navigate("/admin/login", { replace: true })
-  }
+    await logout();
+    navigate("/admin/login", { replace: true });
+  };
 
-  const title = pageTitles[location.pathname] || "Reso"
+  const title = pageTitles[location.pathname] || "Reso";
 
   return (
     <div
@@ -175,9 +173,7 @@ export default function AppLayout() {
         <div className="flex items-center gap-3 px-5 py-5">
           <LogoMark className="size-8" />
           <div>
-            <h1 className="text-sm font-semibold tracking-tight">
-              Reso
-            </h1>
+            <h1 className="text-sm font-semibold tracking-tight">Reso</h1>
             <p className="text-[11px] text-sidebar-foreground/50">
               多渠道聚合网关
             </p>
@@ -277,5 +273,5 @@ export default function AppLayout() {
         </div>
       </nav>
     </div>
-  )
+  );
 }

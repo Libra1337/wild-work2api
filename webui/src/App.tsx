@@ -1,11 +1,12 @@
-import { HashRouter, Navigate, Route, Routes } from "react-router-dom"
-import AppLayout from "@/components/layout/AppLayout"
-import LoginPage from "@/pages/LoginPage"
-import DashboardPage from "@/pages/DashboardPage"
-import AccountsPage from "@/pages/AccountsPage"
-import ApiPage from "@/pages/ApiPage"
-import RequestLogsPage from "@/pages/RequestLogsPage"
-import LogsPage from "@/pages/LogsPage"
+import { HashRouter, Navigate, Route, Routes } from "react-router-dom";
+import AppLayout from "@/components/layout/AppLayout";
+import LoginPage from "@/pages/LoginPage";
+import CatsPage from "@/pages/CatsPage";
+import DashboardPage from "@/pages/DashboardPage";
+import AccountsPage from "@/pages/AccountsPage";
+import ApiPage from "@/pages/ApiPage";
+import RequestLogsPage from "@/pages/RequestLogsPage";
+import LogsPage from "@/pages/LogsPage";
 
 function NotFoundPage() {
   return (
@@ -13,7 +14,7 @@ function NotFoundPage() {
       <div className="text-7xl font-bold text-muted-foreground/30">404</div>
       <p className="text-lg text-muted-foreground">页面不存在</p>
     </div>
-  )
+  );
 }
 
 export default function App() {
@@ -25,6 +26,7 @@ export default function App() {
         <Route path="/admin" element={<AppLayout />}>
           <Route index element={<Navigate to="/admin/dashboard" replace />} />
           <Route path="dashboard" element={<DashboardPage />} />
+          <Route path="cats" element={<CatsPage />} />
           <Route path="token" element={<AccountsPage />} />
           <Route path="keys" element={<ApiPage />} />
           <Route path="reqlog" element={<RequestLogsPage />} />
@@ -33,5 +35,5 @@ export default function App() {
         <Route path="*" element={<NotFoundPage />} />
       </Routes>
     </HashRouter>
-  )
+  );
 }

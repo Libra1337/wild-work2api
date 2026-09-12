@@ -1,41 +1,38 @@
-import type { ApiError } from "@/types"
+import type { ApiError } from "@/types";
 
-const API_BASE = "/api"
+const API_BASE = "/api";
 
-let _csrfToken: string | null = null
+let _csrfToken: string | null = null;
 
 export function setCsrfToken(token: string | null) {
-  _csrfToken = token
+  _csrfToken = token;
 }
 
 export function getCsrfToken() {
-  return _csrfToken
+  return _csrfToken;
 }
 
 class ApiClientError extends Error {
-  status: number
-  data: ApiError
+  status: number;
+  data: ApiError;
 
   constructor(status: number, data: ApiError) {
-    super(data.error || "Request failed")
-    this.status = status
-    this.data = data
+    super(data.error || "Request failed");
+    this.status = status;
+    this.data = data;
   }
 }
 
-export { ApiClientError }
+export { ApiClientError };
 
-async function request<T>(
-  path: string,
-  body?: unknown,
-): Promise<T> {
-  const isPost = body !== undefined
-  const headers: Record<string, string> = {}
+async function request<T>(path: string, body?: unknown): Promise<T> {
+  const isPost = body !== undefined;
+  const headers: Record<string, string> = {};
 
   if (isPost) {
-    headers["Content-Type"] = "application/json"
+    headers["Content-Type"] = "application/json";
     if (_csrfToken) {
-      headers["X-CSRF-Token"] = _csrfToken
+      headers["X-CSRF-Token"] = _csrfToken;
     }
   }
 
@@ -44,18 +41,18 @@ async function request<T>(
     headers,
     body: isPost ? JSON.stringify(body) : undefined,
     credentials: "same-origin",
-  })
+  });
 
-  const data = (await res.json().catch(() => ({}))) as ApiError
+  const data = (await res.json().catch(() => ({}))) as ApiError;
 
   if (!res.ok) {
     if (res.status === 401) {
-      setCsrfToken(null)
+      setCsrfToken(null);
     }
-    throw new ApiClientError(res.status, data)
+    throw new ApiClientError(res.status, data);
   }
 
-  return data as T
+  return data as T;
 }
 
 export const api = {
@@ -64,8 +61,7 @@ export const api = {
   login: (password: string) =>
     request<import("@/types").LoginResult>("/login", { password }),
 
-  logout: () =>
-    request<import("@/types").LogoutResult>("/logout", {}),
+  logout: () => request<import("@/types").LogoutResult>("/logout", {}),
 
   getState: () => request<import("@/types").AppState>("/state"),
 
@@ -86,6 +82,11 @@ export const api = {
 
   travelRunAll: () =>
     request<import("@/types").SimpleResult>("/travel/run_all", {}),
+
+  travelStatus: (force = false) =>
+    request<import("@/types").TravelStatusResult>(
+      `/travel/status${force ? "?refresh=1" : ""}`,
+    ),
 
   activityRunAll: () =>
     request<import("@/types").SimpleResult>("/activity/run_all", {}),
@@ -127,4 +128,4 @@ export const api = {
 
   requestLogs: () =>
     request<{ logs: import("@/types").ReqLog[] }>("/request_logs"),
-}
+};

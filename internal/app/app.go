@@ -33,6 +33,7 @@ import (
 	"wild-work/internal/qoder"
 	"wild-work/internal/scheduler"
 	"wild-work/internal/server"
+	"wild-work/internal/upstream"
 )
 
 // Version 版本号。
@@ -83,6 +84,11 @@ type App struct {
 	sessFP   string // 面板会话持久化文件（重启/部署不丢登录）
 
 	loginGuard *loginGuard // 面板登录暴破防护（按 IP 失败计数 + 锁定）
+
+	travelMu       sync.Mutex // 猫猫状态缓存锁（含 in-flight 去重）
+	travelCache    []TravelStatusEntry
+	travelFetched  time.Time
+	travelFetching bool
 
 	logFile *os.File
 
@@ -509,6 +515,132 @@ func (a *App) CheckinAccount(uid string) (scheduler.CheckinResult, error) {
 }
 
 // CheckinAll 全部账号立即签到。
+// TravelStatusEntry 猫猫乐园单账号状态。
+type TravelStatusEntry struct {
+	UID      string                 `json:"uid"`
+	Nickname string                 `json:"nickname"`
+	Disabled bool                   `json:"disabled"`
+	Buddy    *upstream.Buddy        `json:"buddy"` // nil = 无猫
+	Travel   *upstream.TravelState  `json:"travel"`
+	Streak   *upstream.StreakDetail `json:"streak"`
+	Error    string                 `json:"error,omitempty"`
+}
+
+type travelStatusResp struct {
+	FetchedAt int64               `json:"fetched_at"`
+	Accounts  []TravelStatusEntry `json:"accounts"`
+}
+
+// travelStatusAPI 面板聚合所需的 growth 能力（仅 workbuddy 上游实现）。
+type travelStatusAPI interface {
+	BuddyInfo(*auth.Auth) (*upstream.Buddy, error)
+	TravelStatus(*auth.Auth) (*upstream.TravelState, error)
+	GrowthStreakDetail(*auth.Auth) (*upstream.StreakDetail, error)
+}
+
+const travelStatusTTL = 60 * time.Second
+
+// TravelStatus 聚合全部 workbuddy 账号的猫/旅行/连登状态（60s 缓存）。
+func (a *App) TravelStatus(force bool) travelStatusResp {
+	a.travelMu.Lock()
+	if !force && time.Since(a.travelFetched) < travelStatusTTL && a.travelCache != nil {
+		resp := travelStatusResp{FetchedAt: a.travelFetched.Unix(), Accounts: a.travelCache}
+		a.travelMu.Unlock()
+		return resp
+	}
+	for a.travelFetching { // 并发刷新去重：等前一 个完成后再看缓存
+		a.travelMu.Unlock()
+		time.Sleep(100 * time.Millisecond)
+		a.travelMu.Lock()
+		if time.Since(a.travelFetched) < time.Second && a.travelCache != nil {
+			resp := travelStatusResp{FetchedAt: a.travelFetched.Unix(), Accounts: a.travelCache}
+			a.travelMu.Unlock()
+			return resp
+		}
+	}
+	a.travelFetching = true
+	a.travelMu.Unlock()
+	defer func() {
+		a.travelMu.Lock()
+		a.travelFetching = false
+		a.travelMu.Unlock()
+	}()
+
+	entries := make([]TravelStatusEntry, 0)
+	for _, rt := range a.runtimes {
+		if rt == nil || rt.Pool == nil || rt.Upstream == nil {
+			continue
+		}
+		api, ok := rt.Upstream.(travelStatusAPI)
+		if !ok {
+			continue // 无 growth 能力的平台（traework/qoder）
+		}
+		var mu sync.Mutex
+		var wg sync.WaitGroup
+		sem := make(chan struct{}, 4) // 并发上限，防面板刷新打爆上游
+		for _, st := range rt.Pool.List() {
+			wg.Add(1)
+			go func(uid, nickname string, disabled bool) {
+				defer wg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
+				e := TravelStatusEntry{UID: uid, Nickname: nickname, Disabled: disabled}
+				if disabled {
+					mu.Lock()
+					entries = append(entries, e)
+					mu.Unlock()
+					return
+				}
+				acct := rt.Pool.AuthByUID(uid)
+				if acct == nil {
+					e.Error = "no credentials"
+					mu.Lock()
+					entries = append(entries, e)
+					mu.Unlock()
+					return
+				}
+				e.Buddy, _ = api.BuddyInfo(acct)
+				e.Travel, _ = api.TravelStatus(acct)
+				e.Streak, _ = api.GrowthStreakDetail(acct)
+				mu.Lock()
+				entries = append(entries, e)
+				mu.Unlock()
+			}(st.UID, st.Nickname, st.Disabled)
+		}
+		wg.Wait()
+	}
+	// 排序：可领奖 > 旅行中 > 空闲 > 无猫 > 禁用
+	rank := func(e TravelStatusEntry) int {
+		if e.Disabled {
+			return 5
+		}
+		if e.Buddy == nil {
+			return 4
+		}
+		if e.Travel != nil {
+			switch e.Travel.State {
+			case "arrived":
+				return 1
+			case "traveling":
+				return 2
+			}
+		}
+		return 3
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		if rank(entries[i]) != rank(entries[j]) {
+			return rank(entries[i]) < rank(entries[j])
+		}
+		return entries[i].Nickname < entries[j].Nickname
+	})
+
+	a.travelMu.Lock()
+	a.travelCache = entries
+	a.travelFetched = time.Now()
+	a.travelMu.Unlock()
+	return travelStatusResp{FetchedAt: a.travelFetched.Unix(), Accounts: entries}
+}
+
 // RunTravelAll 异步触发全部平台的旅行巡检（无旅行能力的平台自动跳过）。
 func (a *App) RunTravelAll() {
 	for _, rt := range a.runtimes {
@@ -974,6 +1106,13 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 	inner.HandleFunc("POST /api/activity/run_all", func(w http.ResponseWriter, r *http.Request) {
 		a.RunActivityAll()
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "started": true})
+	})
+	// 猫猫乐园聚合状态：全部账号的猫档案 + 旅行进度 + 连登（60s 缓存，
+	// ?refresh=1 强制刷新）。并发拉取，面板单用户场景足够。
+	inner.HandleFunc("GET /api/travel/status", func(w http.ResponseWriter, r *http.Request) {
+		force := r.URL.Query().Get("refresh") == "1"
+		data := a.TravelStatus(force)
+		writeJSON(w, http.StatusOK, data)
 	})
 	inner.HandleFunc("POST /api/account/refresh", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {

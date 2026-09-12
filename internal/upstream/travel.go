@@ -36,10 +36,23 @@ type Buddy struct {
 
 // TravelState 猫猫旅行状态。
 type TravelState struct {
-	State             string `json:"state"`               // idle / traveling / arrived
-	DailyLimitReached bool   `json:"daily_limit_reached"` // 今日已派出过（自然日 00:00 CST 重置）
-	RecordID          int64  `json:"record_id"`           // 在途/到站记录 id，claim 必带
-	RewardCredit      int64  `json:"reward_credit"`       // 到站可领奖励积分
+	State             string         `json:"state"`               // idle / traveling / arrived
+	DailyLimitReached bool           `json:"daily_limit_reached"` // 今日已派出过（自然日 00:00 CST 重置）
+	RecordID          int64          `json:"record_id"`           // 在途/到站记录 id，claim 必带
+	RewardCredit      int64          `json:"reward_credit"`       // 到站可领奖励积分
+	DepartAt          int64          `json:"depart_at"`           // 派出时刻（Unix 秒）
+	ArriveAt          int64          `json:"arrive_at"`           // 预计到站时刻（Unix 秒）
+	Location          map[string]any `json:"location"`            // 派出地点（对象）
+	Letter            map[string]any `json:"letter"`              // 旅途中寄回的信件（对象）
+}
+
+// StreakDetail 连登详情（面板展示用）。
+type StreakDetail struct {
+	Days              int    `json:"days"`
+	MonthTotalDays    int    `json:"month_total_days"`
+	MonthConsumedDays int    `json:"month_consumed_days"`
+	NextTier          string `json:"next_tier"`
+	NextTierRemaining int    `json:"next_tier_remaining"`
 }
 
 // growthJSON 发 growth 域请求并解信封；body 为 nil 时不带请求体。
@@ -128,6 +141,21 @@ func (c *Client) BuddyFirst(a *auth.Auth) error {
 func (c *Client) BuddyAgreement(a *auth.Auth) error {
 	_, err := c.growthJSON(a, http.MethodPost, buddyAgreementPath, map[string]any{"agree": true})
 	return err
+}
+
+// GrowthStreakDetail 查询连登完整详情（面板展示）。
+func (c *Client) GrowthStreakDetail(a *auth.Auth) (*StreakDetail, error) {
+	data, err := c.growthJSON(a, http.MethodGet, streakPath, nil)
+	if err != nil {
+		return nil, err
+	}
+	var resp struct {
+		Streak StreakDetail `json:"streak"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil, err
+	}
+	return &resp.Streak, nil
 }
 
 // GrowthStreak 查询连登天数（只读 oracle）。响应 data.streak.days；
