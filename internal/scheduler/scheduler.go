@@ -48,6 +48,10 @@ type Scheduler struct {
 	adoptTried map[string]string          // uid → 自然日（CST）：领养门槛未达的当日防抖
 	travelMu   sync.Mutex                 // 旅行巡检重入锁（手动+定时撞车防护）
 	activityMu sync.Mutex                 // 活跃上报重入锁
+
+	onTaskEvent func(TaskEvent) // 任务事件观察者（面板动态流）
+	tcMu        sync.Mutex      // 旅行动作计数锁
+	tc          travelCountersSnapshot
 }
 
 // New 构建。

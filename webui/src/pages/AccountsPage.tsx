@@ -1,34 +1,32 @@
-import { useState, useEffect, useCallback, useRef } from "react"
+import { useState, useEffect, useCallback, useRef } from "react";
 import {
-  Activity,
   CalendarCheck2,
   CheckCircle2,
   Coins,
   ExternalLink,
   FileJson,
   LoaderCircle,
-  PawPrint,
   PauseCircle,
   PlayCircle,
   Plus,
   RefreshCw,
   Trash2,
   XCircle,
-} from "lucide-react"
+} from "lucide-react";
 
-import { api } from "@/lib/api-client"
+import { api } from "@/lib/api-client";
 import type {
   AppState,
   CheckinAllResult,
   RefreshAllResult,
   ResourceDetail,
-} from "@/types"
-import { cn } from "@/lib/utils"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
-import { Alert, AlertDescription } from "@/components/ui/alert"
-import { Textarea } from "@/components/ui/textarea"
+} from "@/types";
+import { cn } from "@/lib/utils";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Dialog,
   DialogContent,
@@ -38,24 +36,24 @@ import {
   DialogTrigger,
   DialogFooter,
   DialogClose,
-} from "@/components/ui/dialog"
-import { LoadingSpinner } from "@/components/shared/LoadingSpinner"
-import { PaginationControls } from "@/components/shared/PaginationControls"
-import { Skeleton } from "@/components/ui/skeleton"
+} from "@/components/ui/dialog";
+import { LoadingSpinner } from "@/components/shared/LoadingSpinner";
+import { PaginationControls } from "@/components/shared/PaginationControls";
+import { Skeleton } from "@/components/ui/skeleton";
 
-const ACCOUNTS_PAGE_SIZE = 5
+const ACCOUNTS_PAGE_SIZE = 5;
 
 const CHANNEL_LABEL: Record<string, string> = {
   workbuddy: "WorkBuddy",
   traework: "TraeWork",
   qoder: "Qoder",
-}
+};
 
 const CHANNEL_DESC: Record<string, string> = {
   workbuddy: "腾讯 CodeBuddy / WorkBuddy",
   traework: "字节 TraeWork",
   qoder: "阿里 Qoder",
-}
+};
 
 function metric(label: string, value: string | number) {
   return (
@@ -63,7 +61,7 @@ function metric(label: string, value: string | number) {
       <p className="text-[11px] text-muted-foreground">{label}</p>
       <p className="mt-1 text-lg font-semibold">{value}</p>
     </div>
-  )
+  );
 }
 
 function AccountDetail({
@@ -71,9 +69,9 @@ function AccountDetail({
   value,
   mono = false,
 }: {
-  label: string
-  value: string | number
-  mono?: boolean
+  label: string;
+  value: string | number;
+  mono?: boolean;
 }) {
   return (
     <div className="min-w-0 rounded-lg bg-muted/35 px-3 py-2.5">
@@ -87,86 +85,89 @@ function AccountDetail({
         {value}
       </p>
     </div>
-  )
+  );
 }
 
 type LoginStage =
-  | { phase: "pick" }
-  | { phase: "waiting"; channel: string; authUrl: string }
+  { phase: "pick" } | { phase: "waiting"; channel: string; authUrl: string };
 
 function AddAccountDialog({ onDone }: { onDone: () => void }) {
-  const [open, setOpen] = useState(false)
-  const [stage, setStage] = useState<LoginStage>({ phase: "pick" })
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
-  const countRef = useRef(0)
+  const [open, setOpen] = useState(false);
+  const [stage, setStage] = useState<LoginStage>({ phase: "pick" });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const countRef = useRef(0);
 
   const stopPolling = () => {
-    if (timerRef.current) clearInterval(timerRef.current)
-    timerRef.current = null
-  }
+    if (timerRef.current) clearInterval(timerRef.current);
+    timerRef.current = null;
+  };
 
-  useEffect(() => stopPolling, [])
+  useEffect(() => stopPolling, []);
 
   const reset = () => {
-    stopPolling()
-    setStage({ phase: "pick" })
-    setError(null)
-  }
+    stopPolling();
+    setStage({ phase: "pick" });
+    setError(null);
+  };
 
   const handleOpenChange = (next: boolean) => {
     if (!next) {
       if (stage.phase === "waiting") {
-        stopPolling()
-        void api.loginCancel().catch(() => {})
+        stopPolling();
+        void api.loginCancel().catch(() => {});
       }
-      reset()
+      reset();
     }
-    setOpen(next)
-  }
+    setOpen(next);
+  };
 
   const start = async (channel: string) => {
-    setBusy(true)
-    setError(null)
+    setBusy(true);
+    setError(null);
     try {
-      const before = await api.getState()
-      countRef.current = before.accounts.length
-      const r = await api.loginStart(channel)
-      setStage({ phase: "waiting", channel, authUrl: r.auth_url })
-      window.open(r.auth_url, "_blank", "noopener")
-      stopPolling()
+      const before = await api.getState();
+      countRef.current = before.accounts.length;
+      const r = await api.loginStart(channel);
+      setStage({ phase: "waiting", channel, authUrl: r.auth_url });
+      window.open(r.auth_url, "_blank", "noopener");
+      stopPolling();
       timerRef.current = setInterval(async () => {
         try {
-          const st = await api.getState()
+          const st = await api.getState();
           if (!st.login_busy) {
-            stopPolling()
-            const added = st.accounts.length > countRef.current
+            stopPolling();
+            const added = st.accounts.length > countRef.current;
             if (added) {
-              handleOpenChange(false)
-              onDone()
+              handleOpenChange(false);
+              onDone();
             } else {
-              setStage({ phase: "pick" })
-              setError("未检测到新账号，可能登录未完成，请重试")
+              setStage({ phase: "pick" });
+              setError("未检测到新账号，可能登录未完成，请重试");
             }
           }
         } catch {
           /* 轮询失败静默重试 */
         }
-      }, 2000)
+      }, 2000);
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "发起登录失败"
-      setError(msg)
+      const msg = err instanceof Error ? err.message : "发起登录失败";
+      setError(msg);
     } finally {
-      setBusy(false)
+      setBusy(false);
     }
-  }
+  };
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogTrigger
         render={
-          <Button variant="outline" size="sm" className="h-10 w-full sm:h-7 sm:w-auto" />
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-10 w-full sm:h-7 sm:w-auto"
+          />
         }
       >
         <Plus className="mr-1.5 h-3.5 w-3.5" />
@@ -246,110 +247,119 @@ function AddAccountDialog({ onDone }: { onDone: () => void }) {
         </div>
       </DialogContent>
     </Dialog>
-  )
+  );
 }
 
 interface ImportItem {
-  name: string
-  status: "pending" | "importing" | "ok" | "error"
-  detail?: string
+  name: string;
+  status: "pending" | "importing" | "ok" | "error";
+  detail?: string;
 }
 
 function ImportDialog({ onDone }: { onDone: () => void }) {
-  const [open, setOpen] = useState(false)
-  const [raw, setRaw] = useState("")
-  const [items, setItems] = useState<ImportItem[]>([])
-  const [busy, setBusy] = useState(false)
-  const [dragOver, setDragOver] = useState(false)
-  const fileInputRef = useRef<HTMLInputElement>(null)
+  const [open, setOpen] = useState(false);
+  const [raw, setRaw] = useState("");
+  const [items, setItems] = useState<ImportItem[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleOpenChange = (next: boolean) => {
     if (!next) {
-      setRaw("")
-      setItems([])
+      setRaw("");
+      setItems([]);
     }
-    setOpen(next)
-  }
+    setOpen(next);
+  };
 
   const patchItem = (index: number, patch: Partial<ImportItem>) => {
     setItems((current) =>
       current.map((it, idx) => (idx === index ? { ...it, ...patch } : it)),
-    )
-  }
+    );
+  };
 
   const runImports = async (entries: { name: string; content: string }[]) => {
-    setBusy(true)
-    setItems(entries.map((entry) => ({ name: entry.name, status: "pending" })))
-    let anyOk = false
+    setBusy(true);
+    setItems(entries.map((entry) => ({ name: entry.name, status: "pending" })));
+    let anyOk = false;
     for (let i = 0; i < entries.length; i++) {
-      patchItem(i, { status: "importing" })
+      patchItem(i, { status: "importing" });
       try {
-        const r = await api.accountImport(entries[i].content)
+        const r = await api.accountImport(entries[i].content);
         if (r.ok) {
-          anyOk = true
+          anyOk = true;
           patchItem(i, {
             status: "ok",
             detail: r.nickname || r.uid?.slice(0, 8) || "已导入",
-          })
+          });
         } else {
-          patchItem(i, { status: "error", detail: r.error || "导入失败" })
+          patchItem(i, { status: "error", detail: r.error || "导入失败" });
         }
       } catch (err: unknown) {
         patchItem(i, {
           status: "error",
           detail: err instanceof Error ? err.message : "导入失败",
-        })
+        });
       }
     }
-    setBusy(false)
-    if (anyOk) onDone()
-  }
+    setBusy(false);
+    if (anyOk) onDone();
+  };
 
   const handleFiles = async (files: FileList | File[]) => {
     const arr = Array.from(files).filter(
-      (f) => f.name.toLowerCase().endsWith(".json") || f.type === "application/json",
-    )
+      (f) =>
+        f.name.toLowerCase().endsWith(".json") || f.type === "application/json",
+    );
     if (arr.length === 0) {
       setItems([
-        { name: "（未选择 JSON 文件）", status: "error", detail: "仅支持 .json 文件" },
-      ])
-      return
+        {
+          name: "（未选择 JSON 文件）",
+          status: "error",
+          detail: "仅支持 .json 文件",
+        },
+      ]);
+      return;
     }
     const entries = await Promise.all(
       arr.map(async (f) => ({
         name: f.name,
         content: (await f.text()).replace(/^\uFEFF/, ""),
       })),
-    )
-    await runImports(entries)
-  }
+    );
+    await runImports(entries);
+  };
 
   const handlePasteImport = async () => {
-    const text = raw.trim().replace(/^\uFEFF/, "")
-    if (!text) return
-    let entries: { name: string; content: string }[]
+    const text = raw.trim().replace(/^\uFEFF/, "");
+    if (!text) return;
+    let entries: { name: string; content: string }[];
     try {
-      const parsed: unknown = JSON.parse(text)
+      const parsed: unknown = JSON.parse(text);
       if (Array.isArray(parsed)) {
         entries = parsed.map((obj, i) => ({
           name: `粘贴 #${i + 1}`,
           content: JSON.stringify(obj),
-        }))
+        }));
       } else {
-        entries = [{ name: "粘贴的 JSON", content: text }]
+        entries = [{ name: "粘贴的 JSON", content: text }];
       }
     } catch {
       // 交给后端给出精确的解析错误
-      entries = [{ name: "粘贴的 JSON", content: text }]
+      entries = [{ name: "粘贴的 JSON", content: text }];
     }
-    await runImports(entries)
-  }
+    await runImports(entries);
+  };
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogTrigger
         render={
-          <Button variant="outline" size="sm" className="h-10 w-full sm:h-7 sm:w-auto" />
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-10 w-full sm:h-7 sm:w-auto"
+          />
         }
       >
         <FileJson className="mr-1.5 h-3.5 w-3.5" />
@@ -369,17 +379,18 @@ function ImportDialog({ onDone }: { onDone: () => void }) {
             aria-label="选择或拖拽 JSON 文件"
             onClick={() => fileInputRef.current?.click()}
             onKeyDown={(e) => {
-              if (e.key === "Enter" || e.key === " ") fileInputRef.current?.click()
+              if (e.key === "Enter" || e.key === " ")
+                fileInputRef.current?.click();
             }}
             onDragOver={(e) => {
-              e.preventDefault()
-              setDragOver(true)
+              e.preventDefault();
+              setDragOver(true);
             }}
             onDragLeave={() => setDragOver(false)}
             onDrop={(e) => {
-              e.preventDefault()
-              setDragOver(false)
-              if (!busy) void handleFiles(e.dataTransfer.files)
+              e.preventDefault();
+              setDragOver(false);
+              if (!busy) void handleFiles(e.dataTransfer.files);
             }}
             className={cn(
               "flex cursor-pointer select-none flex-col items-center gap-2 rounded-lg border border-dashed px-4 py-8 text-center transition-colors",
@@ -402,9 +413,9 @@ function ImportDialog({ onDone }: { onDone: () => void }) {
             className="hidden"
             onChange={(e) => {
               if (e.target.files && e.target.files.length > 0) {
-                void handleFiles(e.target.files)
+                void handleFiles(e.target.files);
               }
-              e.target.value = ""
+              e.target.value = "";
             }}
           />
 
@@ -470,53 +481,53 @@ function ImportDialog({ onDone }: { onDone: () => void }) {
         </DialogFooter>
       </DialogContent>
     </Dialog>
-  )
+  );
 }
 
 interface DetailView {
-  account: string
-  channel: string
-  uid: string
+  account: string;
+  channel: string;
+  uid: string;
 }
 
 function CreditDetailDialog({
   view,
   onClose,
 }: {
-  view: DetailView | null
-  onClose: () => void
+  view: DetailView | null;
+  onClose: () => void;
 }) {
-  const [data, setData] = useState<ResourceDetail | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [data, setData] = useState<ResourceDetail | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!view) {
-      setData(null)
-      setError(null)
-      return
+      setData(null);
+      setError(null);
+      return;
     }
-    let cancelled = false
-    setLoading(true)
-    setError(null)
-    setData(null)
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    setData(null);
     api
       .accountResourceDetail(view.uid)
       .then((r) => {
-        if (!cancelled) setData(r)
+        if (!cancelled) setData(r);
       })
       .catch((err: unknown) => {
         if (!cancelled) {
-          setError(err instanceof Error ? err.message : "加载失败")
+          setError(err instanceof Error ? err.message : "加载失败");
         }
       })
       .finally(() => {
-        if (!cancelled) setLoading(false)
-      })
+        if (!cancelled) setLoading(false);
+      });
     return () => {
-      cancelled = true
-    }
-  }, [view])
+      cancelled = true;
+    };
+  }, [view]);
 
   return (
     <Dialog open={view !== null} onOpenChange={(next) => !next && onClose()}>
@@ -569,11 +580,15 @@ function CreditDetailDialog({
                 </div>
               ) : (
                 data.items.map((item, index) => {
-                  const total = Math.max(item.total, item.used + item.remain, 1)
+                  const total = Math.max(
+                    item.total,
+                    item.used + item.remain,
+                    1,
+                  );
                   const usedPercent = Math.min(
                     Math.round((item.used / total) * 100),
                     100,
-                  )
+                  );
                   return (
                     <div
                       key={`${item.name}-${index}`}
@@ -598,7 +613,7 @@ function CreditDetailDialog({
                         <span>总量 {item.total.toLocaleString()}</span>
                       </div>
                     </div>
-                  )
+                  );
                 })
               )}
             </div>
@@ -606,117 +621,112 @@ function CreditDetailDialog({
         ) : null}
       </DialogContent>
     </Dialog>
-  )
+  );
 }
 
 export default function AccountsPage() {
-  const [accounts, setAccounts] = useState<AppState["accounts"]>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-  const [busyAccount, setBusyAccount] = useState<string | null>(null)
-  const [batchBusy, setBatchBusy] = useState<"checkin" | "refresh" | "travel" | "activity" | null>(null)
-  const [actionError, setActionError] = useState<string | null>(null)
-  const [actionSuccess, setActionSuccess] = useState<string | null>(null)
-  const [detailView, setDetailView] = useState<DetailView | null>(null)
-  const [page, setPage] = useState(1)
+  const [accounts, setAccounts] = useState<AppState["accounts"]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [busyAccount, setBusyAccount] = useState<string | null>(null);
+  const [batchBusy, setBatchBusy] = useState<"checkin" | "refresh" | null>(
+    null,
+  );
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionSuccess, setActionSuccess] = useState<string | null>(null);
+  const [detailView, setDetailView] = useState<DetailView | null>(null);
+  const [page, setPage] = useState(1);
 
   const load = useCallback(async () => {
     try {
-      const st = await api.getState()
-      setAccounts(st.accounts)
-      setError(null)
+      const st = await api.getState();
+      setAccounts(st.accounts);
+      setError(null);
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "加载账号池失败"
-      setError(msg)
+      const msg = err instanceof Error ? err.message : "加载账号池失败";
+      setError(msg);
     } finally {
-      setLoading(false)
+      setLoading(false);
     }
-  }, [])
+  }, []);
 
   useEffect(() => {
-    load()
-    const timer = setInterval(load, 5000)
-    return () => clearInterval(timer)
-  }, [load])
+    load();
+    const timer = setInterval(load, 5000);
+    return () => clearInterval(timer);
+  }, [load]);
 
   const runAction = async (
     uid: string,
     fn: () => Promise<{ msg?: string }>,
     okMsg: string,
   ) => {
-    setBusyAccount(uid)
-    setActionError(null)
-    setActionSuccess(null)
+    setBusyAccount(uid);
+    setActionError(null);
+    setActionSuccess(null);
     try {
-      const r = await fn()
-      setActionSuccess(r.msg || okMsg)
-      await load()
+      const r = await fn();
+      setActionSuccess(r.msg || okMsg);
+      await load();
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "操作失败"
-      setActionError(msg)
+      const msg = err instanceof Error ? err.message : "操作失败";
+      setActionError(msg);
     } finally {
-      setBusyAccount(null)
+      setBusyAccount(null);
     }
-  }
+  };
 
-  const runBatch = async (kind: "checkin" | "refresh" | "travel" | "activity") => {
-    setBatchBusy(kind)
-    setActionError(null)
-    setActionSuccess(null)
+  const runBatch = async (kind: "checkin" | "refresh") => {
+    setBatchBusy(kind);
+    setActionError(null);
+    setActionSuccess(null);
     try {
-      if (kind === "travel") {
-        await api.travelRunAll()
-        setActionSuccess("旅行巡检已启动（后台执行约 1 分钟，结果见运行日志）")
-        return
-      }
-      if (kind === "activity") {
-        await api.activityRunAll()
-        setActionSuccess("活跃上报已启动（后台执行约 2-3 分钟，结果见运行日志）")
-        return
-      }
       if (kind === "checkin") {
-        const r: CheckinAllResult = await api.accountCheckinAll()
-        const total = r.results?.length ?? 0
-        const ok = r.results?.filter((x) => x.ok).length ?? 0
+        const r: CheckinAllResult = await api.accountCheckinAll();
+        const total = r.results?.length ?? 0;
+        const ok = r.results?.filter((x) => x.ok).length ?? 0;
         setActionSuccess(
           `批量签到完成：${ok}/${total} 成功${ok < total ? `，${total - ok} 个失败` : ""}`,
-        )
+        );
       } else {
-        const r: RefreshAllResult = await api.accountRefreshAll()
+        const r: RefreshAllResult = await api.accountRefreshAll();
         setActionSuccess(
           `批量刷新完成：${r.ok}/${r.total} 成功${r.failed > 0 ? `，${r.failed} 个失败` : ""}`,
-        )
+        );
       }
-      await load()
+      await load();
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "批量操作失败"
-      setActionError(msg)
+      const msg = err instanceof Error ? err.message : "批量操作失败";
+      setActionError(msg);
     } finally {
-      setBatchBusy(null)
+      setBatchBusy(null);
     }
-  }
+  };
 
   const handleDelete = async (uid: string, name: string) => {
-    if (!window.confirm(`确定删除账号 ${name}？该操作不可恢复。`)) return
-    await runAction(uid, () => api.accountRemove(uid), "已删除")
-  }
+    if (!window.confirm(`确定删除账号 ${name}？该操作不可恢复。`)) return;
+    await runAction(uid, () => api.accountRemove(uid), "已删除");
+  };
 
-  const total = accounts.length
-  const available = accounts.filter((a) => !a.disabled && !a.cooling).length
-  const cooling = accounts.filter((a) => a.cooling).length
-  const disabled = accounts.filter((a) => a.disabled).length
-  const credits = accounts.reduce((sum, a) => sum + a.credits, 0)
+  const total = accounts.length;
+  const available = accounts.filter((a) => !a.disabled && !a.cooling).length;
+  const cooling = accounts.filter((a) => a.cooling).length;
+  const disabled = accounts.filter((a) => a.disabled).length;
+  const credits = accounts.reduce((sum, a) => sum + a.credits, 0);
 
-  const pageCount = Math.max(Math.ceil(total / ACCOUNTS_PAGE_SIZE), 1)
-  const current = Math.min(Math.max(page, 1), pageCount)
-  const startOffset = (current - 1) * ACCOUNTS_PAGE_SIZE
-  const paginated = accounts.slice(startOffset, startOffset + ACCOUNTS_PAGE_SIZE)
-  const startIndex = total === 0 ? 0 : startOffset + 1
-  const endIndex = Math.min(startOffset + ACCOUNTS_PAGE_SIZE, total)
+  const pageCount = Math.max(Math.ceil(total / ACCOUNTS_PAGE_SIZE), 1);
+  const current = Math.min(Math.max(page, 1), pageCount);
+  const startOffset = (current - 1) * ACCOUNTS_PAGE_SIZE;
+  const paginated = accounts.slice(
+    startOffset,
+    startOffset + ACCOUNTS_PAGE_SIZE,
+  );
+  const startIndex = total === 0 ? 0 : startOffset + 1;
+  const endIndex = Math.min(startOffset + ACCOUNTS_PAGE_SIZE, total);
 
   useEffect(() => {
-    setPage((p) => Math.min(Math.max(p, 1), pageCount))
-  }, [pageCount])
+    setPage((p) => Math.min(Math.max(p, 1), pageCount));
+  }, [pageCount]);
 
   return (
     <div className="mx-auto w-full max-w-[1320px] space-y-5">
@@ -758,36 +768,6 @@ export default function AccountsPage() {
                   <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
                 )}
                 批量刷新
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                title="立即执行一轮猫猫旅行巡检（领养/派出/领奖），无需等定时"
-                disabled={batchBusy !== null || total === 0}
-                onClick={() => void runBatch("travel")}
-                className="h-10 w-full sm:h-7 sm:w-auto"
-              >
-                {batchBusy === "travel" ? (
-                  <LoadingSpinner size={14} className="mr-1.5" />
-                ) : (
-                  <PawPrint className="mr-1.5 h-3.5 w-3.5" />
-                )}
-                旅行巡检
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                title="立即上报对话活跃（每号 5 条，点亮连登与领猫门槛），无需等定时"
-                disabled={batchBusy !== null || total === 0}
-                onClick={() => void runBatch("activity")}
-                className="h-10 w-full sm:h-7 sm:w-auto"
-              >
-                {batchBusy === "activity" ? (
-                  <LoadingSpinner size={14} className="mr-1.5" />
-                ) : (
-                  <Activity className="mr-1.5 h-3.5 w-3.5" />
-                )}
-                活跃上报
               </Button>
               <AddAccountDialog onDone={load} />
               <ImportDialog onDone={load} />
@@ -843,7 +823,10 @@ export default function AccountsPage() {
                               {CHANNEL_LABEL[account.group] ?? account.group}
                             </Badge>
                             {account.disabled ? (
-                              <Badge variant="destructive" className="text-[10px]">
+                              <Badge
+                                variant="destructive"
+                                className="text-[10px]"
+                              >
                                 已停用
                               </Badge>
                             ) : account.cooling ? (
@@ -869,7 +852,11 @@ export default function AccountsPage() {
                             label="积分"
                             value={account.credits.toLocaleString()}
                           />
-                          <AccountDetail label="UID" value={account.uid.slice(0, 8)} mono />
+                          <AccountDetail
+                            label="UID"
+                            value={account.uid.slice(0, 8)}
+                            mono
+                          />
                           <AccountDetail
                             label="上次签到"
                             value={account.last_checkin_at || "-"}
@@ -936,7 +923,8 @@ export default function AccountsPage() {
                             size="sm"
                             onClick={() =>
                               setDetailView({
-                                account: account.nickname || account.uid.slice(0, 8),
+                                account:
+                                  account.nickname || account.uid.slice(0, 8),
                                 channel: account.group,
                                 uid: account.uid,
                               })
@@ -953,7 +941,10 @@ export default function AccountsPage() {
                               void runAction(
                                 account.uid,
                                 () =>
-                                  api.accountDisable(account.uid, !account.disabled),
+                                  api.accountDisable(
+                                    account.uid,
+                                    !account.disabled,
+                                  ),
                                 account.disabled ? "已启用" : "已停用",
                               )
                             }
@@ -1004,7 +995,10 @@ export default function AccountsPage() {
         </CardContent>
       </Card>
 
-      <CreditDetailDialog view={detailView} onClose={() => setDetailView(null)} />
+      <CreditDetailDialog
+        view={detailView}
+        onClose={() => setDetailView(null)}
+      />
     </div>
-  )
+  );
 }

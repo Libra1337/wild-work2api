@@ -163,3 +163,16 @@ export interface TravelStatusResult {
   fetched_at: number;
   accounts: TravelStatusEntry[];
 }
+
+export interface TaskEvent {
+  kind: string // travel | activity
+  uid: string
+  msg: string
+  at: number
+}
+
+export interface TaskFeedResult {
+  events: TaskEvent[]
+  travel_running: boolean
+  activity_running: boolean
+}

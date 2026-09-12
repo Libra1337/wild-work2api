@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   CalendarClock,
   Flame,
@@ -7,11 +7,12 @@ import {
   PawPrint,
   Plane,
   RefreshCw,
+  Radio,
   Send,
   Sparkles,
 } from "lucide-react";
 import { api } from "@/lib/api-client";
-import type { TravelStatusEntry, TravelStatusResult } from "@/types";
+import type { TaskEvent, TravelStatusEntry, TravelStatusResult } from "@/types";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -392,6 +393,85 @@ export default function CatsPage() {
           {notice}
         </div>
       )}
+
+      {(travelRunning || activityRunning) && (
+        <div className="flex items-center gap-2 rounded-md border border-sky-200 bg-sky-50 px-3 py-2 text-xs font-medium text-sky-700 dark:border-sky-900 dark:bg-sky-950/40 dark:text-sky-400">
+          <LoaderCircle className="size-3.5 animate-spin" />
+          {travelRunning ? "旅行巡检进行中…" : "活跃上报进行中…"}
+          {tasks[0]?.msg && (
+            <span className="font-normal text-muted-foreground">
+              最新：{tasks[0].msg}
+            </span>
+          )}
+        </div>
+      )}
+
+      {/* 任务动态流 */}
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="flex items-center gap-1.5 text-sm font-medium">
+            <Radio className="size-4 text-sky-500" />
+            任务动态
+            <span className="ml-1 text-[11px] font-normal text-muted-foreground">
+              巡检 / 上报的逐账号实时反馈
+            </span>
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          {tasks.length === 0 ? (
+            <p className="py-4 text-center text-xs text-muted-foreground">
+              暂无动态——点上方按钮触发一次，或等定时任务（09/21 点巡检 · 10
+              点上报）
+            </p>
+          ) : (
+            <div className="max-h-56 space-y-1 overflow-y-auto pr-1">
+              {tasks.slice(0, 40).map((e, i) => (
+                <div
+                  key={`${e.at}-${i}`}
+                  className="flex items-baseline gap-2 text-xs"
+                >
+                  <span
+                    className={cn(
+                      "mt-1 size-1.5 shrink-0 rounded-full",
+                      !e.uid
+                        ? "bg-sky-500"
+                        : e.msg.includes("失败") ||
+                            e.msg.includes("中断") ||
+                            e.msg.includes("疑似")
+                          ? "bg-amber-500"
+                          : e.msg.includes("+")
+                            ? "bg-emerald-500"
+                            : "bg-muted-foreground/40",
+                    )}
+                  />
+                  <span className="shrink-0 tabular-nums text-muted-foreground">
+                    {new Date(e.at * 1000).toLocaleTimeString("zh-CN", {
+                      hour: "2-digit",
+                      minute: "2-digit",
+                      second: "2-digit",
+                    })}
+                  </span>
+                  <span
+                    className={cn(
+                      "shrink-0",
+                      e.kind === "travel"
+                        ? "text-orange-500"
+                        : "text-violet-500",
+                    )}
+                  >
+                    {e.kind === "travel" ? "巡检" : "上报"}
+                  </span>
+                  <span
+                    className={cn("min-w-0 truncate", !e.uid && "font-medium")}
+                  >
+                    {e.uid ? `· ${e.msg}` : e.msg}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       {/* 统计卡 */}
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">

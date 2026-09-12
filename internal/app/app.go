@@ -90,6 +90,11 @@ type App struct {
 	travelFetched  time.Time
 	travelFetching bool
 
+	taskMu       sync.Mutex      // 任务动态流锁
+	taskEvents   []TaskEventView // 环形（最新在后）
+	travelRuns   int             // travel start 未配对 end 数（>0 = 运行中）
+	activityRuns int
+
 	logFile *os.File
 
 	refreshMu  sync.Mutex // 防并发刷新积分
@@ -515,6 +520,58 @@ func (a *App) CheckinAccount(uid string) (scheduler.CheckinResult, error) {
 }
 
 // CheckinAll 全部账号立即签到。
+// TaskEventView 任务动态流条目（面板展示）。
+type TaskEventView struct {
+	Kind string `json:"kind"` // travel | activity
+	UID  string `json:"uid"`
+	Msg  string `json:"msg"`
+	At   int64  `json:"at"`
+}
+
+const taskFeedCap = 200
+
+// NotifyTaskEvent 接收调度器任务事件（main 里 wiring 到 scheduler observer）。
+// start/end 事件维护运行态计数；UID 为空即起止事件。
+func (a *App) NotifyTaskEvent(kind, uid, msg string) {
+	a.taskMu.Lock()
+	defer a.taskMu.Unlock()
+	if uid == "" {
+		switch {
+		case strings.Contains(msg, "开始"):
+			if kind == "travel" {
+				a.travelRuns++
+			} else {
+				a.activityRuns++
+			}
+		case strings.Contains(msg, "完成"):
+			if kind == "travel" {
+				a.travelRuns = 0
+			} else {
+				a.activityRuns = 0
+			}
+		}
+	}
+	a.taskEvents = append(a.taskEvents, TaskEventView{Kind: kind, UID: uid, Msg: msg, At: time.Now().Unix()})
+	if len(a.taskEvents) > taskFeedCap {
+		a.taskEvents = a.taskEvents[len(a.taskEvents)-taskFeedCap:]
+	}
+}
+
+// TaskFeed 返回任务动态（新→旧）与运行态。
+func (a *App) TaskFeed() map[string]any {
+	a.taskMu.Lock()
+	defer a.taskMu.Unlock()
+	out := make([]TaskEventView, 0, len(a.taskEvents))
+	for i := len(a.taskEvents) - 1; i >= 0; i-- {
+		out = append(out, a.taskEvents[i])
+	}
+	return map[string]any{
+		"events":           out,
+		"travel_running":   a.travelRuns > 0,
+		"activity_running": a.activityRuns > 0,
+	}
+}
+
 // TravelStatusEntry 猫猫乐园单账号状态。
 type TravelStatusEntry struct {
 	UID      string                 `json:"uid"`
@@ -1113,6 +1170,10 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 		force := r.URL.Query().Get("refresh") == "1"
 		data := a.TravelStatus(force)
 		writeJSON(w, http.StatusOK, data)
+	})
+	// 任务动态流：旅行巡检/活跃上报的实时逐账号反馈（面板轮询）。
+	inner.HandleFunc("GET /api/tasks", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, a.TaskFeed())
 	})
 	inner.HandleFunc("POST /api/account/refresh", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {

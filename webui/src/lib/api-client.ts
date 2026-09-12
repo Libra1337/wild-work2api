@@ -88,6 +88,8 @@ export const api = {
       `/travel/status${force ? "?refresh=1" : ""}`,
     ),
 
+  tasks: () => request<import("@/types").TaskFeedResult>("/tasks"),
+
   activityRunAll: () =>
     request<import("@/types").SimpleResult>("/activity/run_all", {}),
 

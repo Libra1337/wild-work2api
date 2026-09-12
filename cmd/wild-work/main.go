@@ -175,6 +175,8 @@ func main() {
 	trSch.SetCheckinObserver(func(r scheduler.CheckinResult) { appInst.NotifyCheckin("traework", r) })
 	qdSch.SetCheckinObserver(func(r scheduler.CheckinResult) { appInst.NotifyCheckin("qoder", r) })
 	wbSch.SetRefreshObserver(func(uid string, ok bool, msg string) { appInst.NotifyRefresh("workbuddy", uid, ok, msg) })
+	// 任务动态流：旅行巡检/活跃上报的逐账号实时反馈（面板猫猫乐园页轮询）
+	wbSch.SetTaskObserver(func(ev scheduler.TaskEvent) { appInst.NotifyTaskEvent(ev.Kind, ev.UID, ev.Msg) })
 	trSch.SetRefreshObserver(func(uid string, ok bool, msg string) { appInst.NotifyRefresh("traework", uid, ok, msg) })
 	qdSch.SetRefreshObserver(func(uid string, ok bool, msg string) { appInst.NotifyRefresh("qoder", uid, ok, msg) })
 

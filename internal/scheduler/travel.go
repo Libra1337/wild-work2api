@@ -45,6 +45,31 @@ type travelAPI interface {
 	ReportChatActivity(a *auth.Auth, conversationID, requestID string) error
 }
 
+// TaskEvent 任务执行事件（面板实时动态流）：逐账号动作 + 开始/结束汇总。
+type TaskEvent struct {
+	Kind string // travel | activity
+	UID  string
+	Msg  string
+	At   time.Time
+}
+
+// SetTaskObserver 注册任务事件观察者（面板任务动态流的数据源）。
+func (s *Scheduler) SetTaskObserver(fn func(TaskEvent)) {
+	s.mu.Lock()
+	s.onTaskEvent = fn
+	s.mu.Unlock()
+}
+
+// emitTask 发一条任务事件（无观察者时零开销）。
+func (s *Scheduler) emitTask(kind, uid, msg string) {
+	s.mu.Lock()
+	fn := s.onTaskEvent
+	s.mu.Unlock()
+	if fn != nil {
+		fn(TaskEvent{Kind: kind, UID: uid, Msg: msg, At: time.Now()})
+	}
+}
+
 // travelCap 返回上游的旅行能力视图；无该能力（非 workbuddy 平台）返回 nil。
 func (s *Scheduler) travelCap() travelAPI {
 	if s.cfg.Upstream == nil {
@@ -69,6 +94,15 @@ func (s *Scheduler) RunTravelNow() {
 		return
 	}
 	defer s.travelMu.Unlock()
+	total := 0
+	for _, st := range s.cfg.Pool.List() {
+		if !st.Disabled {
+			total++
+		}
+	}
+	s.emitTask("travel", "", fmt.Sprintf("旅行巡检开始（%d 个账号）", total))
+	var adopted, claimed, departed int
+	var claimCredits int64
 	first := true
 	for _, st := range s.cfg.Pool.List() {
 		if st.Disabled {
@@ -82,8 +116,73 @@ func (s *Scheduler) RunTravelNow() {
 			time.Sleep(travelAccountDelay)
 		}
 		first = false
+		before := s.travelCounters()
 		s.travelOne(api, a)
+		after := s.travelCounters()
+		switch {
+		case after.adopts > before.adopts:
+			adopted++
+			s.emitTask("travel", a.UID, "领养成功 +300 积分")
+		case after.claims > before.claims:
+			claimed++
+			claimCredits += after.claimCredits - before.claimCredits
+			s.emitTask("travel", a.UID, fmt.Sprintf("领奖 +%d 积分", after.claimCredits-before.claimCredits))
+		case after.departs > before.departs:
+			departed++
+			s.emitTask("travel", a.UID, "已派出旅行")
+		default:
+			s.emitTask("travel", a.UID, travelSkipReason(api, a))
+		}
 	}
+	s.emitTask("travel", "", fmt.Sprintf("旅行巡检完成：领奖 %d 次(+%d 积分) · 派出 %d · 领养 %d",
+		claimed, claimCredits, departed, adopted))
+}
+
+// bumpTravel 原子更新旅行动作计数。
+func (s *Scheduler) bumpTravel(fn func(*travelCountersSnapshot)) {
+	s.tcMu.Lock()
+	fn(&s.tc)
+	s.tcMu.Unlock()
+}
+
+// travelCounters 读取旅行动作计数（供逐账号增量判定）。
+func (s *Scheduler) travelCounters() travelCountersSnapshot {
+	s.tcMu.Lock()
+	defer s.tcMu.Unlock()
+	return s.tc
+}
+
+type travelCountersSnapshot struct {
+	adopts      int
+	claims      int
+	departs     int
+	claimCredits int64
+}
+
+// travelSkipReason 无动作账号的一句话原因（面板展示用）。
+func travelSkipReason(api travelAPI, a *auth.Auth) string {
+	if ts, err := api.TravelStatus(a); err == nil && ts != nil {
+		switch ts.State {
+		case travelStateTraveling:
+			return fmt.Sprintf("旅行中（约 %s 后到站，奖励 %d）", fmtDur(time.Until(time.Unix(ts.ArriveAt, 0))), ts.RewardCredit)
+		case travelStateIdle:
+			if ts.DailyLimitReached {
+				return "今日已派出，明天再来"
+			}
+		}
+	}
+	return "本轮无需动作"
+}
+
+// fmtDur 中文时长（小时/分钟）。
+func fmtDur(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	if h := int(d.Hours()); h > 0 {
+		return fmt.Sprintf("%d小时%d分", h, int(d.Minutes())%60)
+	}
+	return fmt.Sprintf("%d分钟", int(d.Minutes()))
 }
 
 // travelOne 单账号单趟状态机：查有无猫 + 查状态 + 最多一个动作。
@@ -125,6 +224,7 @@ func (s *Scheduler) travelDepart(api travelAPI, a *auth.Auth, ts *upstream.Trave
 		return
 	}
 	log.Printf("travel platform=%s uid=%s: depart ok location=%d", s.cfg.Name, a.UID, travelLocationID)
+	s.bumpTravel(func(t *travelCountersSnapshot) { t.departs++ })
 }
 
 // travelClaim 到站领奖（必须带 record_id）。
@@ -139,6 +239,7 @@ func (s *Scheduler) travelClaim(api travelAPI, a *auth.Auth, ts *upstream.Travel
 		return
 	}
 	log.Printf("travel platform=%s uid=%s: claim ok record=%d reward=%d", s.cfg.Name, a.UID, ts.RecordID, reward)
+	s.bumpTravel(func(t *travelCountersSnapshot) { t.claims++; t.claimCredits += reward })
 }
 
 // adoptBuddy 无猫时领养：先同意协议（幂等）再 buddy/first。
@@ -156,6 +257,7 @@ func (s *Scheduler) adoptBuddy(api travelAPI, a *auth.Auth, force bool) {
 	switch {
 	case err == nil:
 		log.Printf("travel platform=%s uid=%s: adopt ok (+300 credits)", s.cfg.Name, a.UID)
+		s.bumpTravel(func(t *travelCountersSnapshot) { t.adopts++ })
 	case upstream.IsBuddyTaskIncomplete(err):
 		s.markAdoptTried(a.UID)
 		log.Printf("travel platform=%s uid=%s: adopt skipped (conversation threshold not reached, retry tomorrow)", s.cfg.Name, a.UID)
@@ -195,6 +297,14 @@ func (s *Scheduler) RunActivityNow() {
 	}
 	defer s.activityMu.Unlock()
 	count := s.activityCount()
+	total := 0
+	for _, st := range s.cfg.Pool.List() {
+		if !st.Disabled {
+			total++
+		}
+	}
+	s.emitTask("activity", "", fmt.Sprintf("活跃上报开始（%d 个账号 × %d 条）", total, count))
+	var reported, streaks int
 	first := true
 	for _, st := range s.cfg.Pool.List() {
 		if st.Disabled {
@@ -222,22 +332,33 @@ func (s *Scheduler) RunActivityNow() {
 			}
 		}
 		if ok < count {
+			s.emitTask("activity", a.UID, fmt.Sprintf("上报中断（%d/%d 条）", ok, count))
 			continue
 		}
+		reported++
 		days, err := api.GrowthStreak(a)
 		switch {
 		case err != nil:
 			log.Printf("WARN: activity platform=%s uid=%s: streak check failed: %v", s.cfg.Name, a.UID, err)
+			s.emitTask("activity", a.UID, "上报完成，连登回读失败")
 		case days == 0:
 			log.Printf("WARN: activity platform=%s uid=%s: report OK but streak.days=0 (silent drop?)", s.cfg.Name, a.UID)
+			s.emitTask("activity", a.UID, "上报完成，但连登未点亮（疑似静默丢弃）")
 		default:
 			log.Printf("activity platform=%s uid=%s: streak days=%d", s.cfg.Name, a.UID, days)
+			streaks++
+			s.emitTask("activity", a.UID, fmt.Sprintf("上报完成，连登 %d 天", days))
 		}
 		// 无猫账号对话量刚补满 → 立即重试领养（豁免当日防抖）
 		if buddy, err := api.BuddyInfo(a); err == nil && buddy == nil {
+			before := s.travelCounters()
 			s.adoptBuddy(api, a, true)
+			if s.travelCounters().adopts > before.adopts {
+				s.emitTask("activity", a.UID, "领养成功 +300 积分")
+			}
 		}
 	}
+	s.emitTask("activity", "", fmt.Sprintf("活跃上报完成：%d/%d 个号发满，连登点亮 %d", reported, total, streaks))
 }
 
 // activityCount 读取每号上报条数（默认 5，配置可改）。
