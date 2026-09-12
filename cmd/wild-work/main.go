@@ -23,6 +23,7 @@ import (
 	"wild-work/internal/config"
 	"wild-work/internal/platform"
 	"wild-work/internal/pool"
+	"wild-work/internal/prompt"
 	"wild-work/internal/provider"
 	"wild-work/internal/qoder"
 	"wild-work/internal/scheduler"
@@ -108,6 +109,22 @@ func main() {
 	wbUp := upstream.New()
 	wbUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
 	wbUp.SanitizeFingerprints = cfg.Features.SanitizeBlacklistFingerprints
+	// 系统提示词策略：passthrough（默认）透传客户端 system，被 11128 拦截时
+	// 自动降级中性提示词重试；custom 用内置/文件提示词整段替换。
+	switch cfg.Prompt.Mode {
+	case "custom", "passthrough":
+		wbUp.PromptMode = cfg.Prompt.Mode
+	default:
+		log.Printf("prompt.mode %q 非法（custom/passthrough），回退 passthrough", cfg.Prompt.Mode)
+		wbUp.PromptMode = "passthrough"
+	}
+	if wbUp.PromptMode == "custom" {
+		text, err := prompt.Load(cfg.Prompt.Mode, cfg.Prompt.File)
+		if err != nil {
+			fatal("加载系统提示词失败：%v", err)
+		}
+		wbUp.PromptText = text
+	}
 	trUp := traework.New()
 	trUp.HTTP.Timeout = time.Duration(cfg.Upstream.TimeoutSeconds) * time.Second
 	qdUp := qoder.New()
@@ -117,10 +134,20 @@ func main() {
 		fatal("解析签到时间失败：%v", err)
 	}
 
-	wbSch := scheduler.New(scheduler.Config{Pool: wbPool, Upstream: wbUp, Name: "workbuddy", CheckinMinutes: checkinMinutes, KeepaliveHours: cfg.Schedule.KeepaliveHours})
-	trSch := scheduler.New(scheduler.Config{Pool: trPool, Upstream: trUp, Name: "traework", CheckinMinutes: checkinMinutes, KeepaliveHours: cfg.Schedule.KeepaliveHours})
+	travelEnabled := cfg.Schedule.TravelEnabled == nil || *cfg.Schedule.TravelEnabled
+	activityEnabled := cfg.Schedule.ActivityEnabled == nil || *cfg.Schedule.ActivityEnabled
+	wbSch := scheduler.New(scheduler.Config{
+		Pool: wbPool, Upstream: wbUp, Name: "workbuddy",
+		CheckinMinutes: checkinMinutes, KeepaliveHours: cfg.Schedule.KeepaliveHours,
+		TravelHours:         cfg.Schedule.TravelHours,
+		ActivityHours:       cfg.Schedule.ActivityHours,
+		ActivityReportCount: cfg.Schedule.ActivityReportCount,
+		TravelDisabled:      !travelEnabled,
+		ActivityDisabled:    !activityEnabled,
+	})
+	trSch := scheduler.New(scheduler.Config{Pool: trPool, Upstream: trUp, Name: "traework", CheckinMinutes: checkinMinutes, KeepaliveHours: cfg.Schedule.KeepaliveHours, TravelDisabled: true, ActivityDisabled: true})
 	// Qoder 无签到活动：调度器只做 token keepalive（每日 refresh 保活）
-	qdSch := scheduler.New(scheduler.Config{Pool: qdPool, Upstream: qdUp, Name: "qoder", KeepaliveHours: cfg.Schedule.KeepaliveHours, SkipCheckin: true})
+	qdSch := scheduler.New(scheduler.Config{Pool: qdPool, Upstream: qdUp, Name: "qoder", KeepaliveHours: cfg.Schedule.KeepaliveHours, SkipCheckin: true, TravelDisabled: true, ActivityDisabled: true})
 
 	runtimes := map[provider.Kind]*server.Runtime{
 		provider.WorkBuddy: {Kind: provider.WorkBuddy, Pool: wbPool, Upstream: wbUp, StaticModels: server.WorkBuddyStaticModels()},

@@ -237,3 +237,32 @@ func TestRecordCheckinAndRemove(t *testing.T) {
 		t.Error("account should be removed")
 	}
 }
+
+// 6004 模型级冷却：只冷却触发模型，账号对其他模型保持可选；截止精确到 resetAt。
+func TestCooldownSoftForModel(t *testing.T) {
+	p := New("")
+	p.Add(&auth.Auth{UID: "u1"})
+	reset := time.Now().Add(30 * time.Minute)
+	p.CooldownSoftForModel("u1", reset, "glm-5.3", "6004 model rate limit")
+	if !p.CooledForModel("u1", "glm-5.3") {
+		t.Fatal("glm-5.3 should be cooling")
+	}
+	if p.CooledForModel("u1", "kimi-k3-1") {
+		t.Fatal("other model must not be affected")
+	}
+	// 整号健康：其他模型请求仍可选中该账号
+	if got := p.Pick(); got == nil || got.UID != "u1" {
+		t.Fatalf("account must stay pickable for other models, got %+v", got)
+	}
+	// 过期自动失效
+	p.mu.RLock()
+	e := p.byUID["u1"]
+	p.mu.RUnlock()
+	e2 := e // 直接改内存截止模拟过期
+	p.mu.Lock()
+	e2.modelCool["glm-5.3"] = time.Now().Add(-time.Second)
+	p.mu.Unlock()
+	if p.CooledForModel("u1", "glm-5.3") {
+		t.Fatal("expired model cooldown should clear")
+	}
+}

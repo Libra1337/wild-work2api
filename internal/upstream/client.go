@@ -9,11 +9,13 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"wild-work/internal/auth"
+	"wild-work/internal/prompt"
 	"wild-work/internal/provider"
 )
 
@@ -99,6 +101,18 @@ type Client struct {
 
 	// SanitizeFingerprints 开启后出站消息内容做指纹脱敏（sanitize.go）。
 	SanitizeFingerprints bool
+
+	// PromptMode 系统提示词策略（internal/prompt）：
+	//   - "custom"：出站前用 PromptText 替换客户端 system/developer（源头消灭 system 指纹误报）；
+	//   - "passthrough"（默认）：透传客户端原始 system；被 11128 内容拦截时
+	//     进入降级窗口（至次日 00:00 CST）换 Degraded 中性提示词并在同请求内重试一次。
+	PromptMode string
+	// PromptText custom 模式使用的提示词文本（空 = 内置默认）。
+	PromptText string
+
+	// degradeMu/degradeUntil 11128 降级窗口截止（passthrough 模式）。
+	degradeMu    sync.Mutex
+	degradeUntil time.Time
 
 	// effortsMu/efforts 缓存各模型 supportedEfforts（FetchModels 刷新），供请求体 effort 降级。
 	effortsMu sync.RWMutex
@@ -271,13 +285,67 @@ func (c *Client) RefreshToken(a *auth.Auth) error {
 	return nil
 }
 
+// degradeActive 11128 降级窗口是否生效。
+func (c *Client) degradeActive() bool {
+	c.degradeMu.Lock()
+	defer c.degradeMu.Unlock()
+	return time.Now().Before(c.degradeUntil)
+}
+
+// degradeTrigger 触发降级窗口至次日 00:00（CST）。
+func (c *Client) degradeTrigger() {
+	next := time.Now().In(time.FixedZone("CST", 8*3600)).Add(24 * time.Hour)
+	next = time.Date(next.Year(), next.Month(), next.Day(), 0, 0, 0, 0, next.Location())
+	c.degradeMu.Lock()
+	c.degradeUntil = next
+	c.degradeMu.Unlock()
+}
+
+// applyPrompt 按模式做出站前系统提示词改写（返回改写后的 body 与是否已降级）。
+func (c *Client) applyPrompt(body []byte) ([]byte, bool) {
+	switch c.PromptMode {
+	case "custom":
+		return prompt.Rewrite(body, c.PromptText), false
+	default: // passthrough
+		if c.degradeActive() {
+			return prompt.Rewrite(body, prompt.Degraded), true
+		}
+		return body, false
+	}
+}
+
 // ChatStream 发 chat 请求并返回原始 SSE body 流（调用方负责 Close）。
-// 非 2xx 时 rc 为 nil、body 为上游响应体（供调用方 Classify(status, string(body))）、err 为 nil；
+// 非 2xx 时 rc 为 nil、body 为上游响应体（供调用方 Classify(status, string(body))、err 为 nil；
 // 只有传输层失败才返回 err。
+// 内容拦截（400 + 11128）自愈：passthrough 模式首遇触发降级窗口并换中性
+// 提示词同请求重试一次；custom 模式 system 已被替换，11128 意味着用户
+// 内容触发审核，同样换中性 system 重试一次（无害，用户消息不动）。
 func (c *Client) ChatStream(a *auth.Auth, body []byte) (rc io.ReadCloser, status int, respBody []byte, err error) {
+	prepared, degraded := c.applyPrompt(PrepareBodyOptWithEfforts(body, c.SanitizeFingerprints, c.effortsSnapshot()))
+	rc, status, respBody, err = c.chatOnce(a, prepared)
+	if err != nil || status < 400 {
+		return rc, status, respBody, err
+	}
+	if status == http.StatusBadRequest && strings.Contains(string(respBody), "11128") && !degraded {
+		log.Printf("chat_stream uid=%s: content-blocked (11128) -> degraded prompt retry", a.UID)
+		c.degradeTrigger()
+		return c.chatOnce(a, prompt.Rewrite(prepared, prompt.Degraded))
+	}
+	return rc, status, respBody, err
+}
+
+// chatOnce 单次上游 chat 请求（无重试语义）。
+func (c *Client) chatOnce(a *auth.Auth, prepared []byte) (rc io.ReadCloser, status int, respBody []byte, err error) {
+	// 调试开关：WB2A_DUMP_REQ 非空时把发往上游的最终请求体落盘（含净化/注入后的
+	// 形态），供离线二分定位指纹命中行。不设置时零开销。
+	if os.Getenv("WB2A_DUMP_REQ") != "" && len(prepared) >= 4096 {
+		_ = os.MkdirAll("data", 0o755)
+		if err := os.WriteFile("data/last_request.json", prepared, 0o600); err != nil {
+			log.Printf("dump req: %v", err)
+		}
+	}
 	snap := a.Snapshot()
 	url := c.chatBase(snap.Region) + "/v2/chat/completions"
-	prepared := PrepareBodyOptWithEfforts(body, c.SanitizeFingerprints, c.effortsSnapshot())
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(prepared))
 	if err != nil {
 		return nil, 0, nil, err

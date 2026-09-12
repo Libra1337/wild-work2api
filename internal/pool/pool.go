@@ -61,6 +61,14 @@ type entry struct {
 	until    time.Time
 	errCount int
 
+	// sessionDeadFails 连续 12153 计数（内存态，重启清零）：
+	// 单次 session-dead 判定大多是接口抖动误报，连续 N 次才真正禁用。
+	sessionDeadFails int
+
+	// modelCool 模型级冷却截止（429 code 6004，上游明说重置时刻）：
+	// 只冷却触发模型，账号对其他模型保持可用。内存态，重启清零。
+	modelCool map[string]time.Time
+
 	lastCheckinOK  bool
 	lastCheckinAt  time.Time
 	lastCheckinMsg string
@@ -278,7 +286,76 @@ func (p *Pool) NoteSuccess(uid string) {
 	defer p.mu.Unlock()
 	if e, ok := p.byUID[uid]; ok {
 		e.errCount = 0
+		e.sessionDeadFails = 0
 	}
+}
+
+// CooldownSoftForModel 模型级软冷却：账号只对触发模型冷却到 resetAt
+// （封顶 2h，防上游文案时钟异常导致超长冷却），其他模型不受影响。
+func (p *Pool) CooldownSoftForModel(uid string, resetAt time.Time, model, reason string) {
+	if model == "" || resetAt.IsZero() {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	e, ok := p.byUID[uid]
+	if !ok {
+		return
+	}
+	if cap := time.Now().Add(2 * time.Hour); resetAt.After(cap) {
+		resetAt = cap
+	}
+	if e.modelCool == nil {
+		e.modelCool = map[string]time.Time{}
+	}
+	e.modelCool[model] = resetAt
+	e.reason = reason
+}
+
+// CooledForModel 报告账号当前是否处于指定模型的冷却期（6004 语义）。
+func (p *Pool) CooledForModel(uid, model string) bool {
+	if model == "" {
+		return false
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	e, ok := p.byUID[uid]
+	if !ok {
+		return false
+	}
+	until, ok := e.modelCool[model]
+	return ok && time.Now().Before(until)
+}
+
+// SessionDeadThreshold 暴露连续 12153 的禁用阈值（调度日志/运维引用）。
+func SessionDeadThreshold() int { return sessionDeadThreshold }
+
+const (
+	// sessionDeadThreshold 连续 12153 次数达到阈值才禁用。上游实测：一次性禁用
+	// 的号事后全部 refresh 成功——单次 12153 多为网络抖动/上游闪断误报。
+	sessionDeadThreshold = 3
+	sessionDeadReason    = "12153 session dead"
+)
+
+// NoteSessionDead 记录一次 ErrSessionDead（12153）——不立即禁用。
+// 计数 +1，达到阈值 → Disable 并清计数；成功（NoteSuccess）清计数。
+// 返回 true 表示本次已达阈值并完成禁用。
+func (p *Pool) NoteSessionDead(uid string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	e, ok := p.byUID[uid]
+	if !ok {
+		return false
+	}
+	e.sessionDeadFails++
+	if e.sessionDeadFails < sessionDeadThreshold {
+		return false
+	}
+	e.disabled = true
+	e.reason = sessionDeadReason
+	e.sessionDeadFails = 0
+	p.saveLocked()
+	return true
 }
 
 // Status 查询单账号状态。

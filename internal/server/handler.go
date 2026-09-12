@@ -483,7 +483,8 @@ func (h *Handler) dispatchChat(rt *Runtime, t0 time.Time, model string, body []b
 	tried := map[string]bool{}
 	var lastErr error
 	var lastStatus int
-	var lastBody []byte // 最后一次上游错误（轮转耗尽时按原状态透传）
+	var lastBody []byte              // 最后一次上游错误（轮转耗尽时按原状态透传）
+	routeModel := extractModel(body) // 出站裸模型名（6004 模型级冷却按它画界）
 	for i := 0; i < h.cfg.MaxRotate; i++ {
 		acct := h.pickWithSticky(rt)
 		if acct == nil {
@@ -498,6 +499,11 @@ func (h *Handler) dispatchChat(rt *Runtime, t0 time.Time, model string, body []b
 			}
 		}
 		tried[acct.UID] = true
+		// 模型级冷却（429 6004）：只跳过触发模型的请求，账号对其他模型可用
+		if rt.Pool.CooledForModel(acct.UID, routeModel) {
+			lastErr = fmt.Errorf("account %s cooling for model %s (6004)", acct.UID, routeModel)
+			continue
+		}
 		if acct.NeedsRefresh(h.cfg.RefreshSkew) {
 			log.Printf("refresh start platform=%s uid=%s reason=request", rt.Kind, acct.UID)
 			if err := rt.Upstream.RefreshToken(acct); err != nil {
@@ -506,7 +512,12 @@ func (h *Handler) dispatchChat(rt *Runtime, t0 time.Time, model string, body []b
 				h.stickyClear(rt)
 				var ue *provider.Error
 				if errors.As(err, &ue) && ue.Kind == provider.ErrSessionDead {
-					rt.Pool.Disable(acct.UID, "refresh session dead")
+					// 连续 N 次才禁用：单次 12153 多为抖动误报（上游实测误杀率 100%）
+					if rt.Pool.NoteSessionDead(acct.UID) {
+						log.Printf("session dead disable platform=%s uid=%s consecutive=%d", rt.Kind, acct.UID, pool.SessionDeadThreshold())
+					} else {
+						rt.Pool.Cooldown(acct.UID, pool.CoolErr, h.cfg.ErrCooldown, "refresh session dead (transient?)")
+					}
 				} else {
 					rt.Pool.Cooldown(acct.UID, pool.CoolErr, h.cfg.ErrCooldown, "refresh: "+err.Error())
 				}
@@ -534,9 +545,21 @@ func (h *Handler) dispatchChat(rt *Runtime, t0 time.Time, model string, body []b
 			case provider.ErrHardCredit:
 				rt.Pool.Cooldown(acct.UID, pool.CoolHard, h.cfg.HardCooldown, "余额/权益不足")
 			case provider.ErrSoftRate:
+				// 6004 模型级限流：上游明说「将在 X 重置」→ 只对该模型冷却到 X，
+				// 账号对其他模型立即可用（整号冷却会误伤其他模型流量）。
+				if provider.IsModelRateLimit(string(respBody)) {
+					if resetAt, ok := provider.ParseSoftRateReset(string(respBody)); ok {
+						rt.Pool.CooldownSoftForModel(acct.UID, resetAt, routeModel, "6004 model rate limit")
+						lastErr = &provider.Error{Kind: kind, Status: status, Msg: string(respBody)}
+						lastStatus, lastBody = status, respBody
+						continue
+					}
+				}
 				rt.Pool.Cooldown(acct.UID, pool.CoolSoft, h.cfg.SoftCooldown, "429 rate limit")
 			case provider.ErrSessionDead:
-				rt.Pool.Disable(acct.UID, "session dead")
+				if rt.Pool.NoteSessionDead(acct.UID) {
+					log.Printf("session dead disable platform=%s uid=%s consecutive=%d", rt.Kind, acct.UID, pool.SessionDeadThreshold())
+				}
 			case provider.ErrServer:
 				rt.Pool.NoteError(acct.UID, h.cfg.ErrThreshold, h.cfg.ErrCooldown)
 			default: // ErrClient / ErrNotFound：请求本身被上游拒绝，原样透传
@@ -680,6 +703,15 @@ func (h *Handler) modelKnown(rt *Runtime, model string) bool {
 		}
 	}
 	return false
+}
+
+// extractModel 从请求体提取出站模型名（rewriteModel 之后的裸名）。
+func extractModel(body []byte) string {
+	var s struct {
+		Model string `json:"model"`
+	}
+	_ = json.Unmarshal(body, &s)
+	return s.Model
 }
 
 func rewriteModel(body []byte, model string) ([]byte, error) {

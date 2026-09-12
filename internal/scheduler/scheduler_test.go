@@ -176,10 +176,18 @@ func TestRunKeepaliveSessionDeadDisables(t *testing.T) {
 		BillingBaseGlob: srv.URL,
 	}
 	s := New(Config{Pool: p, Upstream: up})
+	// 新语义：单次 12153 不禁用（多为抖动误报），连续 3 次才禁用
 	s.RunKeepaliveNow()
-	st, _ := p.Status("u1")
-	if !st.Disabled {
-		t.Errorf("should disable session-dead account: %+v", st)
+	if st, _ := p.Status("u1"); st.Disabled {
+		t.Errorf("single 12153 must not disable: %+v", st)
+	}
+	s.RunKeepaliveNow()
+	if st, _ := p.Status("u1"); st.Disabled {
+		t.Errorf("second 12153 must not disable: %+v", st)
+	}
+	s.RunKeepaliveNow()
+	if st, _ := p.Status("u1"); !st.Disabled {
+		t.Errorf("third consecutive 12153 should disable: %+v", st)
 	}
 }
 

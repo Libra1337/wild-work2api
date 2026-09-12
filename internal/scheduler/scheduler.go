@@ -29,15 +29,23 @@ type Config struct {
 	// SkipCheckin 平台无签到活动（如 Qoder）时置真：不注入默认签到时间，
 	// 调度器只做 keepalive；否则 New 的默认值会让每账号每天两次注定失败的签到。
 	SkipCheckin bool
+
+	TravelHours         []int // 猫猫旅行时点（默认 [9,21]：一趟派出 + 一趟领奖闭环），仅 workbuddy
+	ActivityHours       []int // 活跃上报时点（默认 [10]），仅 workbuddy
+	ActivityReportCount int   // 每号每次上报条数（默认 5：领猫对话量门槛）
+	// TravelDisabled/ActivityDisabled 显式关闭对应排程（traework/qoder 平台置真）。
+	TravelDisabled   bool
+	ActivityDisabled bool
 }
 
 // Scheduler 调度器。
 type Scheduler struct {
-	mu        sync.Mutex // 保护 cfg 中的小时配置
-	cfg       Config
-	wake      chan struct{}              // 配置变更唤醒 Run 循环重算下次触发
-	onCheckin func(CheckinResult)        // 结果观察器，供 GUI 接收自动签到结果
-	onRefresh func(string, bool, string) // token 刷新结果观察器
+	mu         sync.Mutex // 保护 cfg 中的小时配置
+	cfg        Config
+	wake       chan struct{}              // 配置变更唤醒 Run 循环重算下次触发
+	onCheckin  func(CheckinResult)        // 结果观察者，供 GUI 接收自动签到结果
+	onRefresh  func(string, bool, string) // token 刷新结果观察者
+	adoptTried map[string]string          // uid → 自然日（CST）：领养门槛未达的当日防抖
 }
 
 // New 构建。
@@ -56,6 +64,15 @@ func New(cfg Config) *Scheduler {
 	}
 	if len(cfg.KeepaliveHours) == 0 {
 		cfg.KeepaliveHours = []int{22}
+	}
+	if !cfg.TravelDisabled && len(cfg.TravelHours) == 0 {
+		cfg.TravelHours = []int{9, 21}
+	}
+	if !cfg.ActivityDisabled && len(cfg.ActivityHours) == 0 {
+		cfg.ActivityHours = []int{10}
+	}
+	if cfg.ActivityReportCount <= 0 {
+		cfg.ActivityReportCount = 5
 	}
 	return &Scheduler{cfg: cfg, wake: make(chan struct{}, 1)}
 }
@@ -200,13 +217,72 @@ func nextFireMinutes(now time.Time, minutes []int) time.Time {
 	return earliest
 }
 
+// taskKind 调度任务类型。
+type taskKind int
+
+const (
+	taskCheckin taskKind = iota
+	taskKeepalive
+	taskTravel
+	taskActivity
+)
+
+// scheduleAll 返回全部任务时点（分钟），travel/activity 关闭时为空。
+func (s *Scheduler) scheduleAll() (checkin, keepalive, travel, activity []int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	checkin = append([]int{}, s.cfg.CheckinMinutes...)
+	keepalive = hoursToMinutes(s.cfg.KeepaliveHours)
+	if !s.cfg.TravelDisabled {
+		travel = append([]int{}, s.cfg.TravelHours...)
+	}
+	if !s.cfg.ActivityDisabled {
+		activity = append([]int{}, s.cfg.ActivityHours...)
+	}
+	return
+}
+
 // Run 主循环，阻塞直到 ctx 取消。
+// 按最近触发时点调度四类任务；触发时点按任务槽精确执行（不再按当前分钟匹配，
+// 避免进程繁忙跨分钟后当日触发被静默跳过）。
 func (s *Scheduler) Run(ctx context.Context) {
 	for {
-		ch, kh := s.schedule()
-		all := append(append([]int{}, ch...), hoursToMinutes(kh)...)
-		next := nextFireMinutes(time.Now(), all)
-		timer := time.NewTimer(time.Until(next))
+		now := time.Now()
+		ch, kh, th, ah := s.scheduleAll()
+		type slot struct {
+			at   time.Time
+			kind taskKind
+			min  int
+		}
+		var slots []slot
+		for _, m := range ch {
+			slots = append(slots, slot{nextFireMinutes(now, []int{m}), taskCheckin, m})
+		}
+		for _, m := range kh {
+			slots = append(slots, slot{nextFireMinutes(now, []int{m}), taskKeepalive, m})
+		}
+		for _, m := range th {
+			slots = append(slots, slot{nextFireMinutes(now, []int{m}), taskTravel, m})
+		}
+		for _, m := range ah {
+			slots = append(slots, slot{nextFireMinutes(now, []int{m}), taskActivity, m})
+		}
+		var next *slot
+		for i := range slots {
+			if next == nil || slots[i].at.Before(next.at) {
+				next = &slots[i]
+			}
+		}
+		if next == nil {
+			// 无任何任务（全部显式关闭）：空转等唤醒
+			select {
+			case <-ctx.Done():
+				return
+			case <-s.wake:
+			}
+			continue
+		}
+		timer := time.NewTimer(time.Until(next.at))
 		select {
 		case <-ctx.Done():
 			timer.Stop()
@@ -214,13 +290,15 @@ func (s *Scheduler) Run(ctx context.Context) {
 		case <-s.wake:
 			timer.Stop() // 配置变更，重算
 		case <-timer.C:
-			now := time.Now()
-			minute := now.Hour()*60 + now.Minute()
-			if containsMinute(ch, minute) {
+			switch next.kind {
+			case taskCheckin:
 				s.RunCheckinNow()
-			}
-			if contains(kh, now.Hour()) {
+			case taskKeepalive:
 				s.RunKeepaliveNow()
+			case taskTravel:
+				s.RunTravelNow()
+			case taskActivity:
+				s.RunActivityNow()
 			}
 		}
 	}
@@ -408,8 +486,10 @@ func (s *Scheduler) RunKeepaliveNow() {
 			log.Printf("refresh failed platform=%s uid=%s err=%v", name, st.UID, err)
 			var ue *provider.Error
 			if errors.As(err, &ue) && ue.Kind == provider.ErrSessionDead {
-				s.cfg.Pool.Disable(st.UID, "12153 session dead")
-				log.Printf("refresh disabled platform=%s uid=%s reason=session_dead", name, st.UID)
+				// 连续 N 次才禁用：单次 12153 多为抖动误报，一次禁号误杀健康账号
+				if s.cfg.Pool.NoteSessionDead(st.UID) {
+					log.Printf("refresh disabled platform=%s uid=%s reason=session_dead consecutive=%d", name, st.UID, pool.SessionDeadThreshold())
+				}
 			}
 			s.notifyRefresh(st.UID, false, err.Error())
 			continue

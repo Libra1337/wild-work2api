@@ -14,10 +14,27 @@
     "err_cooldown": "10m"
   },
   "schedule": {
-    "checkin_times": ["09:00", "21:00"],
-    "keepalive_hours": [22]
+    "checkin_times": [
+      "09:00",
+      "21:00"
+    ],
+    "keepalive_hours": [
+      22
+    ],
+    "travel_hours": [
+      9,
+      21
+    ],
+    "activity_hours": [
+      10
+    ],
+    "activity_report_count": 5
   },
   "upstream": {
     "timeout_seconds": 120
+  },
+  "prompt": {
+    "mode": "passthrough",
+    "file": ""
   }
 }

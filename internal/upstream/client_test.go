@@ -49,6 +49,8 @@ func jsonResp(status int, body string) *http.Response {
 	}
 }
 
+func textResp(status int, body string) *http.Response { return jsonResp(status, body) }
+
 func testClient(fn rtFunc) *Client {
 	return &Client{
 		HTTP:            &http.Client{Transport: fn},
@@ -227,5 +229,62 @@ func TestRegionBases(t *testing.T) {
 	}
 	if c.chatBase(auth.RegionOf("www.workbuddy.ai")) != "https://gchat.example" || c.billingBase(auth.RegionOf("www.workbuddy.ai")) != "https://gbilling.example" {
 		t.Error("global bases wrong")
+	}
+}
+
+// 11128 内容拦截自愈：passthrough 模式首遇 400+11128 → 同请求换中性 system 重试一次成功；
+// 且触发降级窗口后，后续请求出站前即替换（不再先撞 400）。
+func TestChatStreamContentBlockedRetry(t *testing.T) {
+	var calls int
+	var lastBody string
+	// 拦截规则：客户端原始模板 system 在场 → 400+11128；中性 system → 200
+	c := testClient(func(r *http.Request) (*http.Response, error) {
+		calls++
+		raw, _ := io.ReadAll(r.Body)
+		lastBody = string(raw)
+		if strings.Contains(lastBody, "CLI template") {
+			return textResp(400, `{"error":{"code":11128,"message":"content policy"}}`), nil
+		}
+		return textResp(200, "data: [DONE]\n\n"), nil
+	})
+	a := &auth.Auth{AccessToken: "at", UID: "u1"}
+	body := []byte(`{"model":"glm-5.3","messages":[{"role":"system","content":"CLI template"},{"role":"user","content":"hi"}]}`)
+
+	rc, status, respBody, err := c.ChatStream(a, body)
+	if err != nil || status != 200 {
+		t.Fatalf("status=%d err=%v body=%s", status, err, respBody)
+	}
+	rc.Close()
+	if calls != 2 {
+		t.Fatalf("calls=%d want 2 (retry once)", calls)
+	}
+	if !strings.Contains(lastBody, "helpful assistant") {
+		t.Errorf("retry body should carry degraded prompt: %s", lastBody)
+	}
+	if !c.degradeActive() {
+		t.Error("degrade window should be active after first block")
+	}
+	// 降级窗口内：后续请求出站前即带中性提示词，一次成功
+	calls = 0
+	rc, status, _, err = c.ChatStream(a, body)
+	if err != nil || status != 200 {
+		t.Fatalf("second request status=%d err=%v", status, err)
+	}
+	rc.Close()
+	if calls != 1 || !strings.Contains(lastBody, "helpful assistant") {
+		t.Errorf("calls=%d, degraded prompt should apply upfront: %s", calls, lastBody)
+	}
+}
+
+// 非 11128 的普通 400 不触发重试（避免无谓双发）。
+func TestChatStreamPlain400NoRetry(t *testing.T) {
+	var calls int
+	c := testClient(func(r *http.Request) (*http.Response, error) {
+		calls++
+		return textResp(400, `{"error":{"code":40001,"message":"bad request"}}`), nil
+	})
+	_, status, _, _ := c.ChatStream(&auth.Auth{AccessToken: "at"}, []byte(`{"model":"m","messages":[{"role":"user","content":"x"}]}`))
+	if status != 400 || calls != 1 {
+		t.Fatalf("status=%d calls=%d", status, calls)
 	}
 }

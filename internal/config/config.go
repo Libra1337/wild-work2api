@@ -108,6 +108,12 @@ type Config struct {
 		CheckinHours   []int    `json:"checkin_hours,omitempty"` // 旧格式：[9,21]
 		CheckinTimes   []string `json:"checkin_times,omitempty"` // 新格式：["09:00","21:30"]
 		KeepaliveHours []int    `json:"keepalive_hours"`         // [22]
+		// 猫猫旅行 + 活跃上报（仅 workbuddy 平台生效；traework/qoder 调度器禁用）
+		TravelEnabled       *bool `json:"travel_enabled,omitempty"`        // 默认 true
+		TravelHours         []int `json:"travel_hours,omitempty"`          // 默认 [9,21]
+		ActivityEnabled     *bool `json:"activity_enabled,omitempty"`      // 默认 true
+		ActivityHours       []int `json:"activity_hours,omitempty"`        // 默认 [10]
+		ActivityReportCount int   `json:"activity_report_count,omitempty"` // 默认 5（领猫对话量门槛）
 	} `json:"schedule"`
 
 	Upstream struct {
@@ -118,6 +124,13 @@ type Config struct {
 		// SanitizeBlacklistFingerprints 出站消息内容指纹脱敏（默认开启）
 		SanitizeBlacklistFingerprints bool `json:"sanitize_blacklist_fingerprints"`
 	} `json:"features"`
+
+	Prompt struct {
+		// Mode 系统提示词策略：passthrough（默认，透传+11128 降级重试）/ custom（整段替换）
+		Mode string `json:"mode"` // custom / passthrough
+		// File custom 模式提示词文件路径；空 = 网关内置默认
+		File string `json:"file,omitempty"`
+	} `json:"prompt"`
 
 	// 解析后
 	HardCreditDur  time.Duration `json:"-"`
@@ -143,6 +156,7 @@ func Default() *Config {
 	c.Schedule.KeepaliveHours = []int{22}
 	c.Upstream.TimeoutSeconds = 120
 	c.Features.SanitizeBlacklistFingerprints = true
+	c.Prompt.Mode = "passthrough"
 	return c
 }
 

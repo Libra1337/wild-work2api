@@ -17,6 +17,9 @@ var sanitizeFeatures = []string{
 	"cc_entrypoint=",             // 尾随裸键值（截断前缀即可命中）
 	"You are Claude Code",        // 身份句（截断前缀即可命中）
 	"Main branch (",              // 注入指令句（截断前缀即可命中）
+	"You are a coding agent running in the Codex CLI", // Codex instructions 首段（截断前缀即可命中）
+	"github.com/anthropics/",     // 反馈句里的 Anthropic 仓库链接
+	"11128",                      // 上游反探测：裸数字错误码（PR #46）
 }
 
 // sanitizeHdrRe 剥离层：header 键名即触发（与值无关），整段删除。
@@ -26,10 +29,29 @@ var sanitizeHdrRe = regexp.MustCompile(`(?i)x-anthropic-billing-header:[^;\n]*;?
 var sanitizeKvRe = regexp.MustCompile(`(?i)\bcc_[a-z0-9_]+=[^;\n]*;?\s*`)
 
 // sanitizeRewrites 改写层：全模板句逐字替换（每句只改一个词，语义不变）。
+// 身份句的匹配串不带结尾标点（只到 "…for Claude" 为止）：
+// CLI 版这句以句号收尾，桌面版（claude-desktop-3p / Agent SDK）以逗号接后继内容——
+// 带句号的整句只匹配前者，桌面版会漏网、指纹原样发上游 → 400 code=11128。
+// 去掉结尾标点后两种形态一并覆盖（替换串同样不带标点，原有标点原样保留）。
 var sanitizeRewrites = [][2]string{
 	{
-		"You are Claude Code, Anthropic's official CLI for Claude.",
-		"You are Claude Code, Anthropic's official CLI tool for Claude.",
+		"You are Claude Code, Anthropic's official CLI for Claude",
+		"You are Claude Code, Anthropic's official CLI tool for Claude",
+	},
+	{
+		"You are a coding agent running in the Codex CLI, a terminal-based coding assistant.",
+		"You are a coding agent running in the Codex CLI tool, a terminal-based coding assistant.",
+	},
+	{
+		// 反馈句：整句带 Anthropic 仓库链接，上游按整句拦截；give→provide 一词之差即可绕过。
+		"To give feedback, users should report the issue at https://github.com/anthropics/claude-code/issues",
+		"To provide feedback, users should report the issue at https://github.com/anthropics/claude-code/issues",
+	},
+	{
+		// 上游反探测：请求体出现裸 11128 即整单拦截（与其上下文无关）。
+		// 插入连字符保留可读性（零宽空格无效，实测上游会归一化）。
+		"11128",
+		"11-128",
 	},
 	{
 		"Main branch (you will usually use this for PRs)",
@@ -175,14 +197,49 @@ func sanitizeMessages(messages []any) bool {
 			continue
 		}
 		if role, _ := m["role"].(string); strings.EqualFold(strings.TrimSpace(role), "tool") {
-			continue
+			continue // 工具输出不扫（上游审核不扫工具输出，变异破坏数据）
 		}
-		c, ok := m["content"]
+		// content 与 tool_calls 各自独立判断：content 可为 null（工具调用轮），
+		// 早期版本 content 缺失即 continue，这类消息的 tool_calls 完全不被净化——
+		// 历史里写进工具参数的被拦字符串（文件名、命令、写入内容）会原样漏出。
+		if c, ok := m["content"]; ok {
+			if nc, ch := sanitizeContent(c); ch {
+				m["content"] = nc
+				changed = true
+			}
+		}
+		if tc, ok := m["tool_calls"]; ok {
+			if sanitizeToolCalls(tc) {
+				changed = true
+			}
+		}
+	}
+	return changed
+}
+
+// sanitizeToolCalls 净化 assistant.tool_calls[].function.arguments。
+// arguments 是字符串化的 JSON（不是对象），按文本走 sanitizeText 即可。
+func sanitizeToolCalls(v any) bool {
+	callList, ok := v.([]any)
+	if !ok {
+		return false
+	}
+	changed := false
+	for _, c := range callList {
+		call, ok := c.(map[string]any)
 		if !ok {
 			continue
 		}
-		if nc, ch := sanitizeContent(c); ch {
-			m["content"] = nc
+		fn, ok := call["function"].(map[string]any)
+		if !ok {
+			continue
+		}
+		args, ok := fn["arguments"].(string)
+		if !ok {
+			continue
+		}
+		if s := sanitizeText(args); s != args {
+			fn["arguments"] = s
 			changed = true
 		}
 	}
