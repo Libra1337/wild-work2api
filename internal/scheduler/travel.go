@@ -138,6 +138,20 @@ func (s *Scheduler) RunTravelNow() {
 		claimed, claimCredits, departed, adopted))
 }
 
+// refreshCredits 收益入账（领奖/领养）后立即回读余额写入池——
+// 否则账号卡片要等下次签到才反映猫猫收益，面板上"收益加了但积分没动"。
+func (s *Scheduler) refreshCredits(a *auth.Auth, why string) {
+	if s.cfg.Upstream == nil || s.cfg.Pool == nil {
+		return
+	}
+	remain, err := s.cfg.Upstream.UserResource(a)
+	if err != nil {
+		log.Printf("travel platform=%s uid=%s: refresh credits after %s: %v", s.cfg.Name, a.UID, why, err)
+		return
+	}
+	s.cfg.Pool.SetCredits(a.UID, remain)
+}
+
 // bumpTravel 原子更新旅行动作计数。
 func (s *Scheduler) bumpTravel(fn func(*travelCountersSnapshot)) {
 	s.tcMu.Lock()
@@ -240,6 +254,7 @@ func (s *Scheduler) travelClaim(api travelAPI, a *auth.Auth, ts *upstream.Travel
 	}
 	log.Printf("travel platform=%s uid=%s: claim ok record=%d reward=%d", s.cfg.Name, a.UID, ts.RecordID, reward)
 	s.bumpTravel(func(t *travelCountersSnapshot) { t.claims++; t.claimCredits += reward })
+	s.refreshCredits(a, "claim")
 }
 
 // adoptBuddy 无猫时领养：先同意协议（幂等）再 buddy/first。
@@ -258,6 +273,7 @@ func (s *Scheduler) adoptBuddy(api travelAPI, a *auth.Auth, force bool) {
 	case err == nil:
 		log.Printf("travel platform=%s uid=%s: adopt ok (+300 credits)", s.cfg.Name, a.UID)
 		s.bumpTravel(func(t *travelCountersSnapshot) { t.adopts++ })
+		s.refreshCredits(a, "adopt")
 	case upstream.IsBuddyTaskIncomplete(err):
 		s.markAdoptTried(a.UID)
 		log.Printf("travel platform=%s uid=%s: adopt skipped (conversation threshold not reached, retry tomorrow)", s.cfg.Name, a.UID)

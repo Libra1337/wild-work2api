@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -568,6 +569,9 @@ func (c *Client) UserResourceDetail(a *auth.Auth) (int64, []provider.ResourceIte
 					CycleCapacitySize   int64  `json:"CycleCapacitySize"`
 					CycleCapacityRemain int64  `json:"CycleCapacityRemain"`
 					CycleCapacityUsed   int64  `json:"CycleCapacityUsed"`
+					CreateTime          int64  `json:"CreateTime"`     // 毫秒
+					CycleEndTime        string `json:"CycleEndTime"`  // 周期到期文案
+					ExpiredTime         string `json:"ExpiredTime"`   // 资源到期文案
 				} `json:"Accounts"`
 			} `json:"Data"`
 		} `json:"Response"`
@@ -591,13 +595,27 @@ func (c *Client) UserResourceDetail(a *auth.Auth) (int64, []provider.ResourceIte
 			remain = 0
 		}
 		total += remain
+		gotAt := acct.CreateTime / 1000
+		expire := acct.CycleEndTime
+		if expire == "" {
+			expire = acct.ExpiredTime
+		}
 		items = append(items, provider.ResourceItem{
-			Name:   acct.PackageName,
-			Total:  total_,
-			Used:   used,
-			Remain: remain,
+			Name:     acct.PackageName,
+			Total:    total_,
+			Used:     used,
+			Remain:   remain,
+			GotAt:    gotAt,
+			ExpireAt: expire,
 		})
 	}
+	// 新获得的排最前：猫猫/签到收益以同名"裂变包"入账，最新的在最上面才好辨认
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].GotAt != items[j].GotAt {
+			return items[i].GotAt > items[j].GotAt
+		}
+		return items[i].Remain > items[j].Remain
+	})
 	return total, items, nil
 }
 

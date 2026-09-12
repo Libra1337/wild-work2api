@@ -46,14 +46,18 @@ func TestTravelAdoptsWhenNoBuddy(t *testing.T) {
 			envelope(w, `{}`)
 		case strings.HasSuffix(r.URL.Path, "/buddy/first"):
 			envelope(w, `{}`)
+		case strings.HasSuffix(r.URL.Path, "/get-user-resource"):
+			// 领养收益入账后的余额回读（refreshCredits）
+			envelope(w, `{"Response":{"Data":{"Accounts":[{"PackageName":"pkg","CapacityRemain":2439,"CapacitySize":2439}]}}}`)
 		default:
 			t.Errorf("unexpected path %s", r.URL.Path)
 			w.WriteHeader(404)
 		}
 	})
 	s.RunTravelNow()
-	if n := atomic.LoadInt64(&calls); n != 3 {
-		t.Fatalf("calls=%d want 3 (info+agreement+first)", n)
+	// info+agreement+first+resource（领养后立即回读余额）
+	if n := atomic.LoadInt64(&calls); n != 4 {
+		t.Fatalf("calls=%d want 4 (info+agreement+first+resource)", n)
 	}
 }
 
@@ -69,6 +73,8 @@ func TestTravelClaimsArrived(t *testing.T) {
 		case strings.HasSuffix(r.URL.Path, "/travel/claim"):
 			_ = json.NewDecoder(r.Body).Decode(&claimed)
 			envelope(w, `{"reward_credit":15}`)
+		case strings.HasSuffix(r.URL.Path, "/get-user-resource"):
+			envelope(w, `{"Response":{"Data":{"Accounts":[{"PackageName":"pkg","CapacityRemain":2154,"CapacitySize":2154}]}}}`)
 		default:
 			t.Errorf("unexpected path %s", r.URL.Path)
 		}

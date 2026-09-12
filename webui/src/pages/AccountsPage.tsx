@@ -589,14 +589,27 @@ function CreditDetailDialog({
                     Math.round((item.used / total) * 100),
                     100,
                   );
+                  const gotDate = item.got_at
+                    ? new Date(item.got_at * 1000)
+                    : null;
+                  const isToday = gotDate
+                    ? new Date().toDateString() === gotDate.toDateString()
+                    : false;
                   return (
                     <div
                       key={`${item.name}-${index}`}
                       className="rounded-lg border border-border/60 bg-muted/25 px-3 py-2.5"
                     >
                       <div className="flex items-center justify-between gap-2">
-                        <p className="min-w-0 truncate text-[13px] font-medium">
-                          {item.name}
+                        <p className="flex min-w-0 items-center gap-1.5">
+                          <span className="truncate text-[13px] font-medium">
+                            {item.name}
+                          </span>
+                          {isToday && (
+                            <span className="shrink-0 rounded-full bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-600 dark:text-emerald-400">
+                              今天 +
+                            </span>
+                          )}
                         </p>
                         <span className="shrink-0 font-mono text-xs font-semibold text-primary">
                           剩余 {item.remain.toLocaleString()}
@@ -609,8 +622,16 @@ function CreditDetailDialog({
                         />
                       </div>
                       <div className="mt-1 flex items-center justify-between font-mono text-[11px] text-muted-foreground">
-                        <span>已用 {item.used.toLocaleString()}</span>
-                        <span>总量 {item.total.toLocaleString()}</span>
+                        <span>
+                          {gotDate
+                            ? `获得 ${gotDate.toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" })} ${gotDate.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}`
+                            : `已用 ${item.used.toLocaleString()}`}
+                        </span>
+                        <span>
+                          {item.expire_at
+                            ? `到期 ${item.expire_at.slice(5, 16)}`
+                            : `总量 ${item.total.toLocaleString()}`}
+                        </span>
                       </div>
                     </div>
                   );

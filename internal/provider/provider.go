@@ -100,4 +100,9 @@ type ResourceItem struct {
 	Total  int64  `json:"total"`
 	Used   int64  `json:"used"`
 	Remain int64  `json:"remain"`
+	// GotAt 获得时间（Unix 秒；条目创建时刻）。猫猫领养/每日签到等收益
+	// 都以"裂变包"条目入账且同名，靠时间才能辨认哪条是最新收益。
+	GotAt int64 `json:"got_at"`
+	// ExpireAt 到期时间（上游文案原样，如 "2026-10-13 06:29:23"）。
+	ExpireAt string `json:"expire_at"`
 }

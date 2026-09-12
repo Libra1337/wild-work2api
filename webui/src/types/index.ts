@@ -105,6 +105,8 @@ export interface ResourceDetail {
     total: number;
     used: number;
     remain: number;
+    got_at: number; // 获得时间（Unix 秒，0 = 未知）
+    expire_at: string; // 到期文案
   }[];
 }
 
@@ -165,14 +167,14 @@ export interface TravelStatusResult {
 }
 
 export interface TaskEvent {
-  kind: string // travel | activity
-  uid: string
-  msg: string
-  at: number
+  kind: string; // travel | activity
+  uid: string;
+  msg: string;
+  at: number;
 }
 
 export interface TaskFeedResult {
-  events: TaskEvent[]
-  travel_running: boolean
-  activity_running: boolean
+  events: TaskEvent[];
+  travel_running: boolean;
+  activity_running: boolean;
 }
