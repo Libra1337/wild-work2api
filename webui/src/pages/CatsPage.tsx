@@ -423,6 +423,12 @@ export default function CatsPage() {
         </div>
       </div>
 
+      <p className="flex items-center gap-1 text-[11px] text-muted-foreground">
+        <CalendarClock className="size-3" />
+        领养 +300 积分一次性 · 旅行每天 1 趟 ·
+        连登按天累积，断签可用补签卡（上游规则）
+      </p>
+
       {notice && (
         <div className="flex items-center gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-400">
           <Sparkles className="size-3.5" />
@@ -455,12 +461,12 @@ export default function CatsPage() {
         </CardHeader>
         <CardContent>
           {tasks.length === 0 ? (
-            <p className="py-4 text-center text-xs text-muted-foreground">
+            <p className="flex h-44 items-center justify-center text-center text-xs text-muted-foreground">
               暂无动态——点上方按钮触发一次，或等定时任务（09/21 点巡检 · 10
               点上报）
             </p>
           ) : (
-            <div className="max-h-56 space-y-1 overflow-y-auto pr-1">
+            <div className="h-44 space-y-1 overflow-y-auto pr-1">
               {tasks.slice(0, 40).map((e, i) => (
                 <div
                   key={`${e.at}-${i}`}
@@ -579,12 +585,6 @@ export default function CatsPage() {
           ))}
         </div>
       )}
-
-      <p className="flex items-center gap-1 text-[11px] text-muted-foreground">
-        <CalendarClock className="size-3" />
-        领养 +300 积分一次性；旅行每天 1
-        趟；连登按天累积，断签可用补签卡（上游规则）。
-      </p>
     </div>
   );
 }
