@@ -276,6 +276,10 @@ export default function CatsPage() {
     null,
   );
   const [notice, setNotice] = useState<string | null>(null);
+  const [tasks, setTasks] = useState<TaskEvent[]>([]);
+  const [travelRunning, setTravelRunning] = useState(false);
+  const [activityRunning, setActivityRunning] = useState(false);
+  const seenEndRef = useRef(0); // 已见完成事件数：出现新完成 → 自动刷新状态
 
   const load = useCallback(async (force = false) => {
     setRefreshing(true);
@@ -296,6 +300,38 @@ export default function CatsPage() {
     return () => clearInterval(id);
   }, [load]);
 
+  // 任务动态流轮询：运行中 3s 高频，空闲 10s 低频；出现新的「完成」事件自动刷新猫咪状态
+  useEffect(() => {
+    let stopped = false;
+    const poll = async () => {
+      try {
+        const r = await api.tasks();
+        if (stopped) return;
+        setTasks(r.events ?? []);
+        setTravelRunning(r.travel_running);
+        setActivityRunning(r.activity_running);
+        const ends = (r.events ?? []).filter(
+          (e) => !e.uid && e.msg.includes("完成"),
+        ).length;
+        if (ends > seenEndRef.current && seenEndRef.current > 0) {
+          void load(true); // 新一轮任务刚结束 → 立即刷新状态看结果
+        }
+        seenEndRef.current = ends;
+      } catch {
+        /* ignore */
+      }
+    };
+    void poll();
+    const id = setInterval(
+      poll,
+      travelRunning || activityRunning ? 3_000 : 10_000,
+    );
+    return () => {
+      stopped = true;
+      clearInterval(id);
+    };
+  }, [travelRunning, activityRunning, load]);
+
   const runAction = async (kind: "travel" | "activity") => {
     setActionBusy(kind);
     setNotice(null);
@@ -304,11 +340,11 @@ export default function CatsPage() {
       else await api.activityRunAll();
       setNotice(
         kind === "travel"
-          ? "旅行巡检已启动（约 1 分钟，完成后自动刷新）"
-          : "活跃上报已启动（约 2-3 分钟，完成后自动刷新）",
+          ? "旅行巡检已启动，下方动态实时更新，完成后自动刷新"
+          : "活跃上报已启动，下方动态实时更新，完成后自动刷新",
       );
-      // 巡检完成大约需要 1 分钟（14 号 × 限速），延迟后再刷数据看结果
-      setTimeout(() => void load(true), kind === "travel" ? 75_000 : 150_000);
+      // 兜底：动态流之外按预期时长再刷一次（防轮询错过完成事件）
+      setTimeout(() => void load(true), kind === "travel" ? 90_000 : 180_000);
     } finally {
       setActionBusy(null);
     }

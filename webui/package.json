@@ -4,11 +4,13 @@
   "version": "1.0.0",
   "type": "module",
   "pnpm": {
-    "onlyBuiltDependencies": ["esbuild"]
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
   },
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "tsc --noEmit && vite build",
     "build:embed": "vite build && node scripts/embed.mjs",
     "typecheck": "tsc -b --noEmit",
     "preview": "vite preview"
