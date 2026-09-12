@@ -58,11 +58,17 @@ func (s *Scheduler) travelCap() travelAPI {
 
 // RunTravelNow 立即对池内所有可用账号执行一趟旅行巡检。
 // 禁用账号跳过；查询失败只跳过该账号本轮；账号间限速。
+// TryLock 防重入：手动触发与定时触发撞车时直接跳过，不双打上游。
 func (s *Scheduler) RunTravelNow() {
 	api := s.travelCap()
 	if api == nil {
 		return
 	}
+	if !s.travelMu.TryLock() {
+		log.Printf("travel platform=%s: busy, skip (already running)", s.cfg.Name)
+		return
+	}
+	defer s.travelMu.Unlock()
 	first := true
 	for _, st := range s.cfg.Pool.List() {
 		if st.Disabled {
@@ -183,6 +189,11 @@ func (s *Scheduler) RunActivityNow() {
 	if api == nil {
 		return
 	}
+	if !s.activityMu.TryLock() {
+		log.Printf("activity platform=%s: busy, skip (already running)", s.cfg.Name)
+		return
+	}
+	defer s.activityMu.Unlock()
 	count := s.activityCount()
 	first := true
 	for _, st := range s.cfg.Pool.List() {

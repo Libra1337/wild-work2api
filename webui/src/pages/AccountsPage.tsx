@@ -1,11 +1,13 @@
 import { useState, useEffect, useCallback, useRef } from "react"
 import {
+  Activity,
   CalendarCheck2,
   CheckCircle2,
   Coins,
   ExternalLink,
   FileJson,
   LoaderCircle,
+  PawPrint,
   PauseCircle,
   PlayCircle,
   Plus,
@@ -612,7 +614,7 @@ export default function AccountsPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [busyAccount, setBusyAccount] = useState<string | null>(null)
-  const [batchBusy, setBatchBusy] = useState<"checkin" | "refresh" | null>(null)
+  const [batchBusy, setBatchBusy] = useState<"checkin" | "refresh" | "travel" | "activity" | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
   const [actionSuccess, setActionSuccess] = useState<string | null>(null)
   const [detailView, setDetailView] = useState<DetailView | null>(null)
@@ -657,11 +659,21 @@ export default function AccountsPage() {
     }
   }
 
-  const runBatch = async (kind: "checkin" | "refresh") => {
+  const runBatch = async (kind: "checkin" | "refresh" | "travel" | "activity") => {
     setBatchBusy(kind)
     setActionError(null)
     setActionSuccess(null)
     try {
+      if (kind === "travel") {
+        await api.travelRunAll()
+        setActionSuccess("旅行巡检已启动（后台执行约 1 分钟，结果见运行日志）")
+        return
+      }
+      if (kind === "activity") {
+        await api.activityRunAll()
+        setActionSuccess("活跃上报已启动（后台执行约 2-3 分钟，结果见运行日志）")
+        return
+      }
       if (kind === "checkin") {
         const r: CheckinAllResult = await api.accountCheckinAll()
         const total = r.results?.length ?? 0
@@ -746,6 +758,36 @@ export default function AccountsPage() {
                   <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
                 )}
                 批量刷新
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                title="立即执行一轮猫猫旅行巡检（领养/派出/领奖），无需等定时"
+                disabled={batchBusy !== null || total === 0}
+                onClick={() => void runBatch("travel")}
+                className="h-10 w-full sm:h-7 sm:w-auto"
+              >
+                {batchBusy === "travel" ? (
+                  <LoadingSpinner size={14} className="mr-1.5" />
+                ) : (
+                  <PawPrint className="mr-1.5 h-3.5 w-3.5" />
+                )}
+                旅行巡检
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                title="立即上报对话活跃（每号 5 条，点亮连登与领猫门槛），无需等定时"
+                disabled={batchBusy !== null || total === 0}
+                onClick={() => void runBatch("activity")}
+                className="h-10 w-full sm:h-7 sm:w-auto"
+              >
+                {batchBusy === "activity" ? (
+                  <LoadingSpinner size={14} className="mr-1.5" />
+                ) : (
+                  <Activity className="mr-1.5 h-3.5 w-3.5" />
+                )}
+                活跃上报
               </Button>
               <AddAccountDialog onDone={load} />
               <ImportDialog onDone={load} />

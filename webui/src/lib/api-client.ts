@@ -84,6 +84,12 @@ export const api = {
   accountCheckinAll: () =>
     request<import("@/types").CheckinAllResult>("/account/checkin_all", {}),
 
+  travelRunAll: () =>
+    request<import("@/types").SimpleResult>("/travel/run_all", {}),
+
+  activityRunAll: () =>
+    request<import("@/types").SimpleResult>("/activity/run_all", {}),
+
   accountRefresh: (uid: string) =>
     request<import("@/types").SimpleResult>("/account/refresh", { uid }),
 

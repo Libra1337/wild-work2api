@@ -509,6 +509,28 @@ func (a *App) CheckinAccount(uid string) (scheduler.CheckinResult, error) {
 }
 
 // CheckinAll 全部账号立即签到。
+// RunTravelAll 异步触发全部平台的旅行巡检（无旅行能力的平台自动跳过）。
+func (a *App) RunTravelAll() {
+	for _, rt := range a.runtimes {
+		if rt == nil || rt.Scheduler == nil {
+			continue
+		}
+		sch := rt.Scheduler
+		a.safeGo(sch.RunTravelNow)
+	}
+}
+
+// RunActivityAll 异步触发全部平台的活跃上报。
+func (a *App) RunActivityAll() {
+	for _, rt := range a.runtimes {
+		if rt == nil || rt.Scheduler == nil {
+			continue
+		}
+		sch := rt.Scheduler
+		a.safeGo(sch.RunActivityNow)
+	}
+}
+
 func (a *App) CheckinAll() []scheduler.CheckinResult {
 	results := make([]scheduler.CheckinResult, 0)
 	for _, rt := range a.runtimes {
@@ -942,6 +964,16 @@ func (a *App) HandleAPI(mux *http.ServeMux) {
 	inner.HandleFunc("POST /api/account/checkin_all", func(w http.ResponseWriter, r *http.Request) {
 		results := a.CheckinAll()
 		writeJSON(w, http.StatusOK, map[string]any{"results": results})
+	})
+	// 一键旅行巡检 / 活跃上报：异步触发（全量账号含限速间隔需 1-3 分钟，
+	// 同步等完会撞 HTTP 超时）；结果写运行日志，面板即时返回"已启动"。
+	inner.HandleFunc("POST /api/travel/run_all", func(w http.ResponseWriter, r *http.Request) {
+		a.RunTravelAll()
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "started": true})
+	})
+	inner.HandleFunc("POST /api/activity/run_all", func(w http.ResponseWriter, r *http.Request) {
+		a.RunActivityAll()
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "started": true})
 	})
 	inner.HandleFunc("POST /api/account/refresh", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
